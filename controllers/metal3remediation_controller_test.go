@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
-	bmov1alpha1 "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
 	infrav1 "github.com/metal3-io/cluster-api-provider-metal3/api/v1beta2"
 	"github.com/metal3-io/cluster-api-provider-metal3/baremetal"
 	baremetal_mocks "github.com/metal3-io/cluster-api-provider-metal3/baremetal/mocks"
@@ -86,21 +85,17 @@ func setReconcileNormalRemediationExpectations(ctrl *gomock.Controller,
 	tc reconcileNormalRemediationTestCase) *baremetal_mocks.MockRemediationManagerInterface {
 	m := baremetal_mocks.NewMockRemediationManagerInterface(ctrl)
 
-	bmh := &bmov1alpha1.BareMetalHost{}
+	// If user has set bmh.Spec.Online to false, do not try to remediate the host and set remediation phase to failed
 	if tc.GetUnhealthyHostFails {
-		m.EXPECT().GetUnhealthyHost(context.TODO()).Return(nil, nil, errors.New("can't find foo_bmh"))
+		m.EXPECT().PowerSpec(gomock.Any()).Return(false, errors.New("can't find foo_bmh"))
 		return m
 	}
-	m.EXPECT().GetUnhealthyHost(context.TODO()).Return(bmh, nil, nil)
-
-	// If user has set bmh.Spec.Online to false, do not try to remediate the host and set remediation phase to failed
 	if tc.HostStatusOffline {
-		m.EXPECT().OnlineStatus(bmh).Return(false)
+		m.EXPECT().PowerSpec(gomock.Any()).Return(false, nil)
 		m.EXPECT().SetRemediationPhase(infrav1.PhaseFailed)
 		return m
 	}
-	m.EXPECT().OnlineStatus(bmh).Return(true)
-
+	m.EXPECT().PowerSpec(gomock.Any()).Return(true, nil)
 	node := &corev1.Node{
 		TypeMeta: metav1.TypeMeta{},
 		ObjectMeta: metav1.ObjectMeta{

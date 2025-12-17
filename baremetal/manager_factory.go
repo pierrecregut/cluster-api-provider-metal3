@@ -46,7 +46,7 @@ type ManagerFactoryInterface interface {
 		capm3MachineList *infrav1.Metal3MachineList,
 		metadataLog logr.Logger,
 	) (TemplateManagerInterface, error)
-	NewRemediationManager(*infrav1.Metal3Remediation, *infrav1.Metal3Machine, *clusterv1.Machine, logr.Logger) (
+	NewRemediationManager(context.Context, *infrav1.Metal3Remediation, *infrav1.Metal3Machine, *clusterv1.Machine, logr.Logger) (
 		RemediationManagerInterface, error,
 	)
 	GetRemoteClientCache() RemoteClientCacheInterface
@@ -106,8 +106,8 @@ func (f ManagerFactory) NewMachineTemplateManager(capm3Template *infrav1.Metal3M
 }
 
 // NewRemediationManager creates a new RemediationManager.
-func (f ManagerFactory) NewRemediationManager(remediation *infrav1.Metal3Remediation,
+func (f ManagerFactory) NewRemediationManager(ctx context.Context, remediation *infrav1.Metal3Remediation,
 	metal3machine *infrav1.Metal3Machine, machine *clusterv1.Machine,
 	remediationLog logr.Logger) (RemediationManagerInterface, error) {
-	return NewRemediationManager(f.client, capm3remote.NewClusterClient, capm3remote.NewClusterStorageClient, remediation, metal3machine, machine, remediationLog)
+	return NewRemediationManager(ctx, f.client, f.remoteClientCache, capm3remote.NewClusterClient, capm3remote.NewClusterStorageClient, remediation, metal3machine, machine, remediationLog)
 }

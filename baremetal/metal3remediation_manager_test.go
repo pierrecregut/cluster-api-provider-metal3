@@ -47,16 +47,21 @@ type testCaseRemediationManager struct {
 var _ = Describe("Metal3Remediation manager", func() {
 
 	var fakeClient client.Client
+	var mockRemoteClientCache RemoteClientCacheInterface
 
 	BeforeEach(func() {
 		fakeClient = fake.NewClientBuilder().WithScheme(setupScheme()).Build()
+		mockRemoteClientCache = MockRemoteContext()
 	})
 
 	Describe("Test New Remediation Manager", func() {
 
 		DescribeTable("Test NewRemediationManager",
 			func(tc testCaseRemediationManager) {
-				_, err := NewRemediationManager(fakeClient, nil, nil,
+				_, err := NewRemediationManager(
+					context.TODO(), fakeClient,
+					mockRemoteClientCache,
+					nil, nil,
 					tc.Metal3Remediation,
 					tc.Metal3Machine,
 					tc.Machine,
@@ -85,7 +90,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 
 	DescribeTable("Test Finalizers",
 		func(tc testCaseRemediationManager) {
-			remediationMgr, err := NewRemediationManager(nil, nil, nil, tc.Metal3Remediation, nil, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), nil, mockRemoteClientCache, nil, nil, tc.Metal3Remediation, nil, nil,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -123,7 +128,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 
 	DescribeTable("Test if Retry Limit is set",
 		func(tc testCaseRetryLimitSet) {
-			remediationMgr, err := NewRemediationManager(nil, nil, nil, tc.Metal3Remediation, nil, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), nil, mockRemoteClientCache, nil, nil, tc.Metal3Remediation, nil, nil,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -179,7 +184,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 
 	DescribeTable("Test if Retry Limit is reached",
 		func(tc testCaseRetryLimitSet) {
-			remediationMgr, err := NewRemediationManager(nil, nil, nil, tc.Metal3Remediation, nil, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), nil, mockRemoteClientCache, nil, nil, tc.Metal3Remediation, nil, nil,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -244,38 +249,6 @@ var _ = Describe("Metal3Remediation manager", func() {
 		ExpectTrue        bool
 	}
 
-	DescribeTable("Test OnlineStatus",
-		func(tc testCaseEnsureOnlineStatus) {
-			remediationMgr, err := NewRemediationManager(nil, nil, nil, tc.Metal3Remediation, nil, nil,
-				logr.Discard(),
-			)
-			Expect(err).NotTo(HaveOccurred())
-
-			onlineStatus := remediationMgr.OnlineStatus(tc.Host)
-			if tc.ExpectTrue {
-				Expect(onlineStatus).To(BeTrue())
-			} else {
-				Expect(onlineStatus).To(BeFalse())
-			}
-		},
-		Entry(" Online field in spec is set to false", testCaseEnsureOnlineStatus{
-			Host: &bmov1alpha1.BareMetalHost{
-				Spec: bmov1alpha1.BareMetalHostSpec{
-					Online: false,
-				},
-			},
-			ExpectTrue: false,
-		}),
-		Entry(" Online field in spec is set to true", testCaseEnsureOnlineStatus{
-			Host: &bmov1alpha1.BareMetalHost{
-				Spec: bmov1alpha1.BareMetalHostSpec{
-					Online: true,
-				},
-			},
-			ExpectTrue: true,
-		}),
-	)
-
 	type testCaseGetUnhealthyHost struct {
 		M3Machine         *infrav1.Metal3Machine
 		Metal3Remediation *infrav1.Metal3Remediation
@@ -289,12 +262,13 @@ var _ = Describe("Metal3Remediation manager", func() {
 			}
 			fakeClient := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(&host).Build()
 
-			remediationMgr, err := NewRemediationManager(fakeClient, nil, nil, nil, tc.M3Machine, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), fakeClient, mockRemoteClientCache, nil, nil, nil, tc.M3Machine, nil,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			result, helper, err := remediationMgr.GetUnhealthyHost(context.TODO())
+			remediatedHost, helper, err := remediationMgr.GetUnhealthyHost(context.TODO())
+			result := remediatedHost.GetObject()
 			if tc.ExpectPresent {
 				Expect(result).NotTo(BeNil())
 				Expect(helper).NotTo(BeNil())
@@ -397,6 +371,46 @@ var _ = Describe("Metal3Remediation manager", func() {
 		}),
 	)
 
+	DescribeTable("Test GetUnhealthyHost - HostClaim branch",
+		func(annotation string, seedClaim bool, expectPresent bool) {
+			m3machine := &infrav1.Metal3Machine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      metal3machineName,
+					Namespace: namespaceName,
+					Annotations: map[string]string{
+						HostClaimAnnotation: annotation,
+					},
+				},
+				Spec: infrav1.Metal3MachineSpec{
+					HostSelector: &infrav1.HostSelector{HostClaim: infrav1.HostClaimEnabled},
+					IdentityRef:  infrav1.IdentityRef{Name: "kb"},
+				},
+			}
+			remoteObjects := []client.Object{}
+			if seedClaim {
+				remoteObjects = append(remoteObjects, NewHostClaimBuilder(hostClaimName, remoteNs).Build())
+			}
+			fakeClient := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(m3machine).Build()
+			mgr, err := NewRemediationManager(context.TODO(), fakeClient, MockRemoteContext(remoteObjects...),
+				nil, nil, nil, m3machine, nil, logr.Discard())
+			Expect(err).NotTo(HaveOccurred())
+
+			remediatedHost, helper, err := mgr.GetUnhealthyHost(context.TODO())
+			result := remediatedHost.GetObject()
+			if expectPresent {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result).NotTo(BeNil())
+				Expect(helper).NotTo(BeNil())
+			} else {
+				Expect(err).To(HaveOccurred())
+				Expect(result).To(BeNil())
+				Expect(helper).To(BeNil())
+			}
+		},
+		Entry("finds the HostClaim in the remote namespace", hostClaimName, true, true),
+		Entry("errors when the HostClaim is missing", hostClaimName, false, false),
+	)
+
 	type testCaseSetAnnotation struct {
 		Host       *bmov1alpha1.BareMetalHost
 		M3Machine  *infrav1.Metal3Machine
@@ -406,7 +420,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 	DescribeTable("Test SetUnhealthyAnnotation",
 		func(tc testCaseSetAnnotation) {
 			fakeClient := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(tc.Host).Build()
-			remediationMgr, err := NewRemediationManager(fakeClient, nil, nil, nil, tc.M3Machine, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), fakeClient, mockRemoteClientCache, nil, nil, nil, tc.M3Machine, nil,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -479,6 +493,34 @@ var _ = Describe("Metal3Remediation manager", func() {
 		}),
 	)
 
+	It("Test SetUnhealthyAnnotation - HostClaim backend quarantines the claim", func() {
+		rc := newRemediationCase(hostKindHostClaim, true)
+
+		Expect(rc.mgr.SetUnhealthyAnnotation(context.TODO())).To(Succeed())
+
+		saved := &bmov1alpha1.HostClaim{}
+		Expect(rc.hostClient.Get(context.TODO(), client.ObjectKeyFromObject(rc.host), saved)).To(Succeed())
+
+		By("marking the claim as unhealthy and quarantined")
+		Expect(saved.Annotations).To(HaveKey(infrav1.UnhealthyAnnotation))
+		Expect(saved.Annotations).To(HaveKey(QuarantinedAnnotation))
+
+		By("clearing the workload spec and powering off")
+		Expect(saved.Spec.Image).To(BeNil())
+		Expect(saved.Spec.UserData).To(BeNil())
+		Expect(saved.Spec.NetworkData).To(BeNil())
+		Expect(saved.Spec.MetaData).To(BeNil())
+		Expect(saved.Spec.PoweredOn).To(BeFalse())
+
+		By("retargeting ConsumerRef to the quarantine sentinel so no Metal3Machine adopts it")
+		Expect(saved.Spec.ConsumerRef).NotTo(BeNil())
+		Expect(saved.Spec.ConsumerRef.Kind).To(Equal("Metal3Remediation"))
+		Expect(saved.Spec.ConsumerRef.APIVersion).To(Equal(infrav1.GroupVersion.String()))
+
+		By("dropping the cluster-name label so cluster teardown ignores it")
+		Expect(saved.Labels).NotTo(HaveKey(clusterv1.ClusterNameLabel))
+	})
+
 	type testCaseGetRemediationType struct {
 		Metal3Remediation  *infrav1.Metal3Remediation
 		RemediationType    *infrav1.RemediationType
@@ -487,7 +529,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 
 	DescribeTable("Test GetRemediationType",
 		func(tc testCaseGetRemediationType) {
-			remediationMgr, err := NewRemediationManager(nil, nil, nil, tc.Metal3Remediation, nil, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), nil, mockRemoteClientCache, nil, nil, tc.Metal3Remediation, nil, nil,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -536,7 +578,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 
 	DescribeTable("Test GetLastRemediatedTime",
 		func(tc testCaseGetRemediatedTime) {
-			remediationMgr, err := NewRemediationManager(nil, nil, nil, tc.Metal3Remediation, nil, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), nil, mockRemoteClientCache, nil, nil, tc.Metal3Remediation, nil, nil,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -571,7 +613,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 
 	DescribeTable("Test TimeToRemediate",
 		func(tc testTimeToRemediate) {
-			remediationMgr, err := NewRemediationManager(nil, nil, nil, tc.Metal3Remediation, nil, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), nil, mockRemoteClientCache, nil, nil, tc.Metal3Remediation, nil, nil,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -646,7 +688,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 
 	DescribeTable("Test GetTimeoutSeconds",
 		func(tc testCaseGetTimeoutSeconds) {
-			remediationMgr, err := NewRemediationManager(nil, nil, nil, tc.Metal3Remediation, nil, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), nil, mockRemoteClientCache, nil, nil, tc.Metal3Remediation, nil, nil,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -682,7 +724,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 
 	DescribeTable("Test SetRemediationPhase",
 		func(tc testCaseRemediationManager) {
-			remediationMgr, err := NewRemediationManager(nil, nil, nil, tc.Metal3Remediation, nil, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), nil, mockRemoteClientCache, nil, nil, tc.Metal3Remediation, nil, nil,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -705,7 +747,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 
 	DescribeTable("Test SetLastRemediationTime",
 		func(tc testCaseRemediationManager) {
-			remediationMgr, err := NewRemediationManager(nil, nil, nil, tc.Metal3Remediation, nil, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), nil, mockRemoteClientCache, nil, nil, tc.Metal3Remediation, nil, nil,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -729,7 +771,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 
 	DescribeTable("Test IncreaseRetryCount",
 		func(tc testCaseRemediationManager) {
-			remediationMgr, err := NewRemediationManager(nil, nil, nil, tc.Metal3Remediation, nil, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), nil, mockRemoteClientCache, nil, nil, tc.Metal3Remediation, nil, nil,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -765,7 +807,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 
 	DescribeTable("Test GetRemediationPhase",
 		func(tc testCaseGetRemediationPhase) {
-			remediationMgr, err := NewRemediationManager(nil, nil, nil, tc.Metal3Remediation, nil, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), nil, mockRemoteClientCache, nil, nil, tc.Metal3Remediation, nil, nil,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -827,77 +869,62 @@ var _ = Describe("Metal3Remediation manager", func() {
 		}),
 	)
 
-	Describe("Test PowerOffAnnotation", func() {
-		bmhost := &bmov1alpha1.BareMetalHost{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "myhost",
-				Namespace: namespaceName,
-			},
-		}
+	DescribeTable("Test OnlineStatus",
+		func(kind hostKind, powered bool) {
+			rc := newRemediationCase(kind, powered)
 
-		m3machine := &infrav1.Metal3Machine{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:            "mym3machine",
-				Namespace:       namespaceName,
-				OwnerReferences: []metav1.OwnerReference{},
-				Annotations: map[string]string{
-					HostAnnotation: namespaceName + "/myhost",
-				},
-			},
-		}
-
-		remediation := &infrav1.Metal3Remediation{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "myremediation",
-				Namespace: namespaceName,
-				UID:       "123",
-			},
-		}
-
-		It("should set and remove the power off annotation as requested", func() {
-			fakeClient := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(bmhost, m3machine, remediation).Build()
-
-			remediationMgr, err := NewRemediationManager(fakeClient, nil, nil, remediation, m3machine, nil,
-				logr.Discard(),
-			)
+			status, err := rc.mgr.PowerSpec(context.TODO())
 			Expect(err).NotTo(HaveOccurred())
+			Expect(status).To(Equal(powered))
+		},
+		Entry("BMH Online=false returns false", hostKindBMH, false),
+		Entry("BMH Online=true returns true", hostKindBMH, true),
+		Entry("HostClaim PoweredOn=false returns false", hostKindHostClaim, false),
+		Entry("HostClaim PoweredOn=true returns true", hostKindHostClaim, true),
+	)
+
+	DescribeTable("Test PowerOffAnnotation",
+		func(kind hostKind) {
+			rc := newRemediationCase(kind, false)
 
 			ensureNotExists := func() {
-				Expect(remediationMgr.IsPowerOffRequested(context.TODO())).To(BeFalse(), "IsPowerOffrequested should return false")
-				Expect(fakeClient.Get(context.TODO(), client.ObjectKeyFromObject(bmhost), bmhost)).To(Succeed())
-				Expect(bmhost.ObjectMeta.Annotations).ToNot(HaveKey(remediationMgr.getPowerOffAnnotationKey()), "bmh should not have power off annotation")
+				Expect(rc.mgr.IsPowerOffRequested(context.TODO())).To(BeFalse(), "IsPowerOffrequested should return false")
+				Expect(rc.hostClient.Get(context.TODO(), client.ObjectKeyFromObject(rc.host), rc.host)).To(Succeed())
+				Expect(rc.host.GetAnnotations()).ToNot(HaveKey(rc.mgr.getPowerOffAnnotationKey()), "host should not have power off annotation")
 			}
 
 			ensureExists := func() {
-				Expect(remediationMgr.IsPowerOffRequested(context.TODO())).To(BeTrue(), "IsPowerOffrequested should return true")
-				Expect(fakeClient.Get(context.TODO(), client.ObjectKeyFromObject(bmhost), bmhost)).To(Succeed())
-				Expect(bmhost.Annotations).To(HaveKeyWithValue(
+				Expect(rc.mgr.IsPowerOffRequested(context.TODO())).To(BeTrue(), "IsPowerOffrequested should return true")
+				Expect(rc.hostClient.Get(context.TODO(), client.ObjectKeyFromObject(rc.host), rc.host)).To(Succeed())
+				Expect(rc.host.GetAnnotations()).To(HaveKeyWithValue(
 					And(
-						Equal(remediationMgr.getPowerOffAnnotationKey()),
-						HaveSuffix(string(remediation.UID)), // to ensure that powerOffAnnotation can be formatted with the UID
+						Equal(rc.mgr.getPowerOffAnnotationKey()),
+						HaveSuffix(string(rc.mgr.Metal3Remediation.UID)), // to ensure that powerOffAnnotation can be formatted with the UID
 					),
 					ContainSubstring(string(bmov1alpha1.RebootModeHard)),
-				), "bmh should have power off annotation")
+				), "host should have power off annotation")
 			}
 
 			ensureNotExists()
 
 			By("Setting annotation")
-			Expect(remediationMgr.SetPowerOffAnnotation(context.TODO())).To(Succeed(), "SetPowerOffAnnotation should succeed")
+			Expect(rc.mgr.SetPowerOffAnnotation(context.TODO())).To(Succeed(), "SetPowerOffAnnotation should succeed")
 			ensureExists()
 
 			By("Removing annotation")
-			Expect(remediationMgr.RemovePowerOffAnnotation(context.TODO())).To(Succeed(), "RemovePowerOffAnnotation should succeed")
+			Expect(rc.mgr.RemovePowerOffAnnotation(context.TODO())).To(Succeed(), "RemovePowerOffAnnotation should succeed")
 			ensureNotExists()
-		})
-	})
+		},
+		Entry("BareMetalHost backend", hostKindBMH),
+		Entry("HostClaim backend", hostKindHostClaim),
+	)
 
 	Describe("Test NodeBackupAnnotation", func() {
 		It("should set and remove the node backup annotation as requested", func() {
 			fakeClient := fake.NewClientBuilder().WithScheme(setupScheme()).Build()
 			m3Remediation := &infrav1.Metal3Remediation{}
 
-			remediationMgr, err := NewRemediationManager(fakeClient, nil, nil, m3Remediation, nil, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), fakeClient, mockRemoteClientCache, nil, nil, m3Remediation, nil, nil,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -980,7 +1007,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 			clientGetter := func(_ context.Context, _ client.Client, _ *clusterv1.Cluster) (clientcorev1.CoreV1Interface, error) {
 				return corev1Client, nil
 			}
-			remediationMgr, err := NewRemediationManager(fakeClient, clientGetter, nil, m3Remediation, nil, capiMachine,
+			remediationMgr, err := NewRemediationManager(context.TODO(), fakeClient, mockRemoteClientCache, clientGetter, nil, m3Remediation, nil, capiMachine,
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -1034,7 +1061,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 				}}}, nil
 			})
 
-			remediationMgr, err := NewRemediationManager(nil, nil, nil,
+			remediationMgr, err := NewRemediationManager(context.TODO(), nil, mockRemoteClientCache, nil, nil,
 				&infrav1.Metal3Remediation{}, nil, nil, logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -1115,7 +1142,7 @@ var _ = Describe("Metal3Remediation manager", func() {
 				return storageClientset.StorageV1(), nil
 			}
 
-			remediationMgr, err := NewRemediationManager(fakeClient, nil, storageClientGetter,
+			remediationMgr, err := NewRemediationManager(context.TODO(), fakeClient, mockRemoteClientCache, nil, storageClientGetter,
 				remediation, nil, nil, logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
@@ -1130,3 +1157,72 @@ var _ = Describe("Metal3Remediation manager", func() {
 		})
 	})
 })
+
+type hostKind int
+
+const (
+	hostKindBMH hostKind = iota
+	hostKindHostClaim
+)
+
+// remediationCase bundles the manager under test with the underlying host
+// object and whichever fake client stores it, so a spec can exercise either
+// backend through the same assertions.
+type remediationCase struct {
+	mgr        *RemediationManager
+	host       client.Object
+	hostClient client.Client
+}
+
+// newRemediationCase builds a RemediationManager seeded with a single host of
+// the requested kind, powered on or off per `powered`. For hostKindBMH the
+// host lives on the manager's local client; for hostKindHostClaim it lives on
+// a mock remote client in `remoteNs`.
+func newRemediationCase(kind hostKind, powered bool) remediationCase {
+	const hostName = "myhost"
+	remediation := &infrav1.Metal3Remediation{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "myremediation",
+			Namespace: namespaceName,
+			UID:       "123",
+		},
+	}
+	m3machine := &infrav1.Metal3Machine{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "mym3machine",
+			Namespace: namespaceName,
+		},
+	}
+
+	switch kind {
+	case hostKindBMH:
+		m3machine.Annotations = map[string]string{HostAnnotation: namespaceName + "/" + hostName}
+		bmh := &bmov1alpha1.BareMetalHost{
+			ObjectMeta: metav1.ObjectMeta{Name: hostName, Namespace: namespaceName},
+			Spec:       bmov1alpha1.BareMetalHostSpec{Online: powered},
+		}
+		fakeClient := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(bmh, m3machine, remediation).Build()
+		mgr, err := NewRemediationManager(context.TODO(), fakeClient, MockRemoteContext(),
+			nil, nil, remediation, m3machine, nil, logr.Discard())
+		Expect(err).NotTo(HaveOccurred())
+		return remediationCase{mgr: mgr, host: bmh, hostClient: fakeClient}
+
+	case hostKindHostClaim:
+		m3machine.Annotations = map[string]string{HostClaimAnnotation: hostName}
+		m3machine.Spec.HostSelector = &infrav1.HostSelector{HostClaim: infrav1.HostClaimEnabled}
+		m3machine.Spec.IdentityRef = infrav1.IdentityRef{Name: "kb"}
+		hc := NewHostClaimBuilder(hostName, remoteNs).WithClusterLabel(clusterName).Build()
+		hc.Spec.PoweredOn = powered
+		// Seed workload spec so quarantine assertions can observe it being cleared.
+		hc.Spec.Image = &bmov1alpha1.Image{URL: "http://example/img"}
+		hc.Spec.UserData = &corev1.SecretReference{Name: "ud"}
+		fakeClient := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(m3machine, remediation).Build()
+		remoteCache := MockRemoteContext(hc)
+		mgr, err := NewRemediationManager(context.TODO(), fakeClient, remoteCache,
+			nil, nil, remediation, m3machine, nil, logr.Discard())
+		Expect(err).NotTo(HaveOccurred())
+		return remediationCase{mgr: mgr, host: hc, hostClient: mgr.RemoteClient}
+	}
+	Fail("unknown hostKind")
+	return remediationCase{}
+}

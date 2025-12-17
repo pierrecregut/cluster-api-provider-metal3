@@ -32,14 +32,13 @@ import (
 	reflect "reflect"
 	time "time"
 
-	v1alpha1 "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
 	v1beta2 "github.com/metal3-io/cluster-api-provider-metal3/api/v1beta2"
 	gomock "go.uber.org/mock/gomock"
 	v1 "k8s.io/api/core/v1"
 	v10 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	v11 "k8s.io/client-go/kubernetes/typed/core/v1"
 	v1beta20 "sigs.k8s.io/cluster-api/api/core/v1beta2"
-	patch "sigs.k8s.io/cluster-api/util/patch"
+	client "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // MockRemediationManagerInterface is a mock of RemediationManagerInterface interface.
@@ -210,22 +209,6 @@ func (mr *MockRemediationManagerInterfaceMockRecorder) GetTimeoutSeconds() *gomo
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetTimeoutSeconds", reflect.TypeOf((*MockRemediationManagerInterface)(nil).GetTimeoutSeconds))
 }
 
-// GetUnhealthyHost mocks base method.
-func (m *MockRemediationManagerInterface) GetUnhealthyHost(ctx context.Context) (*v1alpha1.BareMetalHost, *patch.Helper, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetUnhealthyHost", ctx)
-	ret0, _ := ret[0].(*v1alpha1.BareMetalHost)
-	ret1, _ := ret[1].(*patch.Helper)
-	ret2, _ := ret[2].(error)
-	return ret0, ret1, ret2
-}
-
-// GetUnhealthyHost indicates an expected call of GetUnhealthyHost.
-func (mr *MockRemediationManagerInterfaceMockRecorder) GetUnhealthyHost(ctx any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUnhealthyHost", reflect.TypeOf((*MockRemediationManagerInterface)(nil).GetUnhealthyHost), ctx)
-}
-
 // HasFinalizer mocks base method.
 func (m *MockRemediationManagerInterface) HasFinalizer() bool {
 	m.ctrl.T.Helper()
@@ -324,18 +307,19 @@ func (mr *MockRemediationManagerInterfaceMockRecorder) IsPoweredOn(ctx any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsPoweredOn", reflect.TypeOf((*MockRemediationManagerInterface)(nil).IsPoweredOn), ctx)
 }
 
-// OnlineStatus mocks base method.
-func (m *MockRemediationManagerInterface) OnlineStatus(host *v1alpha1.BareMetalHost) bool {
+// PowerSpec mocks base method.
+func (m *MockRemediationManagerInterface) PowerSpec(ctx context.Context) (bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "OnlineStatus", host)
+	ret := m.ctrl.Call(m, "PowerSpec", ctx)
 	ret0, _ := ret[0].(bool)
-	return ret0
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
-// OnlineStatus indicates an expected call of OnlineStatus.
-func (mr *MockRemediationManagerInterfaceMockRecorder) OnlineStatus(host any) *gomock.Call {
+// PowerSpec indicates an expected call of PowerSpec.
+func (mr *MockRemediationManagerInterfaceMockRecorder) PowerSpec(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "OnlineStatus", reflect.TypeOf((*MockRemediationManagerInterface)(nil).OnlineStatus), host)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "PowerSpec", reflect.TypeOf((*MockRemediationManagerInterface)(nil).PowerSpec), ctx)
 }
 
 // RemoveNodeBackupAnnotations mocks base method.
@@ -523,4 +507,70 @@ func (m *MockRemediationManagerInterface) UpdateNode(ctx context.Context, cluste
 func (mr *MockRemediationManagerInterfaceMockRecorder) UpdateNode(ctx, clusterClient, node any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateNode", reflect.TypeOf((*MockRemediationManagerInterface)(nil).UpdateNode), ctx, clusterClient, node)
+}
+
+// MockRemediatedHost is a mock of RemediatedHost interface.
+type MockRemediatedHost struct {
+	ctrl     *gomock.Controller
+	recorder *MockRemediatedHostMockRecorder
+	isgomock struct{}
+}
+
+// MockRemediatedHostMockRecorder is the mock recorder for MockRemediatedHost.
+type MockRemediatedHostMockRecorder struct {
+	mock *MockRemediatedHost
+}
+
+// NewMockRemediatedHost creates a new mock instance.
+func NewMockRemediatedHost(ctrl *gomock.Controller) *MockRemediatedHost {
+	mock := &MockRemediatedHost{ctrl: ctrl}
+	mock.recorder = &MockRemediatedHostMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockRemediatedHost) EXPECT() *MockRemediatedHostMockRecorder {
+	return m.recorder
+}
+
+// GetObject mocks base method.
+func (m *MockRemediatedHost) GetObject() client.Object {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetObject")
+	ret0, _ := ret[0].(client.Object)
+	return ret0
+}
+
+// GetObject indicates an expected call of GetObject.
+func (mr *MockRemediatedHostMockRecorder) GetObject() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetObject", reflect.TypeOf((*MockRemediatedHost)(nil).GetObject))
+}
+
+// GetPowerSpec mocks base method.
+func (m *MockRemediatedHost) GetPowerSpec() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetPowerSpec")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// GetPowerSpec indicates an expected call of GetPowerSpec.
+func (mr *MockRemediatedHostMockRecorder) GetPowerSpec() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPowerSpec", reflect.TypeOf((*MockRemediatedHost)(nil).GetPowerSpec))
+}
+
+// GetPowerStatus mocks base method.
+func (m *MockRemediatedHost) GetPowerStatus() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetPowerStatus")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// GetPowerStatus indicates an expected call of GetPowerStatus.
+func (mr *MockRemediatedHostMockRecorder) GetPowerStatus() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetPowerStatus", reflect.TypeOf((*MockRemediatedHost)(nil).GetPowerStatus))
 }

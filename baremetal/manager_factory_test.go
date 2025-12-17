@@ -138,7 +138,7 @@ var _ = Describe("Manager factory testing", func() {
 	})
 
 	It("returns a Remediation manager", func() {
-		_, err := managerFactory.NewRemediationManager(&infrav1.Metal3Remediation{}, &infrav1.Metal3Machine{}, &clusterv1.Machine{}, clusterLog)
+		_, err := managerFactory.NewRemediationManager(context.TODO(), &infrav1.Metal3Remediation{}, &infrav1.Metal3Machine{}, &clusterv1.Machine{}, clusterLog)
 		Expect(err).NotTo(HaveOccurred())
 	})
 })

@@ -147,7 +147,7 @@ func (r *Metal3RemediationReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// Create a helper for managing the remediation object.
 	remediationLog.V(baremetal.VerbosityLevelTrace).Info("Creating RemediationManager")
-	remediationMgr, err := r.ManagerFactory.NewRemediationManager(metal3Remediation, &metal3Machine, capiMachine, remediationLog)
+	remediationMgr, err := r.ManagerFactory.NewRemediationManager(ctx, metal3Remediation, &metal3Machine, capiMachine, remediationLog)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to create helper for managing the metal3remediation: %w", err)
 	}
@@ -164,24 +164,15 @@ func (r *Metal3RemediationReconciler) reconcileNormal(ctx context.Context,
 	log.V(baremetal.VerbosityLevelTrace).Info("reconcileNormal: starting remediation workflow")
 
 	// If host is gone, exit early
-	log.V(baremetal.VerbosityLevelTrace).Info("Getting unhealthy host")
-	host, _, err := remediationMgr.GetUnhealthyHost(ctx)
+	online, err := remediationMgr.PowerSpec(ctx)
 	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("unable to find a host for unhealthy machine: %w", err)
+		return ctrl.Result{}, fmt.Errorf("unable to get online status: %w", err)
 	}
-	if host != nil {
-		log.V(baremetal.VerbosityLevelDebug).Info("Unhealthy host found",
-			baremetal.LogFieldBMH, host.Name,
-			baremetal.LogFieldPoweredOn, host.Status.PoweredOn)
-	}
-
 	// If user has set bmh.Spec.Online to false
 	// do not try to remediate the host
 	log.V(baremetal.VerbosityLevelTrace).Info("Checking host online status")
-	if !remediationMgr.OnlineStatus(host) {
+	if !online {
 		log.Info("Unable to remediate, Host is powered off (spec.Online is false)")
-		log.V(baremetal.VerbosityLevelDebug).Info("Setting remediation phase to Failed",
-			baremetal.LogFieldOnline, false)
 		remediationMgr.SetRemediationPhase(infrav1.PhaseFailed)
 		return ctrl.Result{}, nil
 	}

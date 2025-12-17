@@ -41,6 +41,11 @@ import (
 )
 
 const (
+	// QuarantinedAnnotation is set on a HostClaim that has been quarantined
+	// after a failed remediation. The underlying BareMetalHost is the real
+	// target of the quarantine. The value is a timestamp of when the
+	// quarantine was recorded.
+	QuarantinedAnnotation           = "infrastructure.cluster.x-k8s.io/quarantined-at"
 	powerOffAnnotation              = "reboot.metal3.io/metal3-remediation-%s"
 	nodeAnnotationsBackupAnnotation = "remediation.metal3.io/node-annotations-backup"
 	nodeLabelsBackupAnnotation      = "remediation.metal3.io/node-labels-backup"
@@ -58,8 +63,7 @@ type RemediationManagerInterface interface {
 	IsPowerOffRequested(ctx context.Context) (bool, error)
 	IsPoweredOn(ctx context.Context) (bool, error)
 	SetUnhealthyAnnotation(ctx context.Context) error
-	GetUnhealthyHost(ctx context.Context) (*bmov1alpha1.BareMetalHost, *patch.Helper, error)
-	OnlineStatus(host *bmov1alpha1.BareMetalHost) bool
+	PowerSpec(ctx context.Context) (bool, error)
 	GetRemediationType() infrav1.RemediationType
 	RetryLimitIsSet() bool
 	HasReachRetryLimit() bool
@@ -84,6 +88,39 @@ type RemediationManagerInterface interface {
 	IsNodeDrained(ctx context.Context, clusterClient v1.CoreV1Interface, node *corev1.Node) bool
 }
 
+type RemediatedBareMetalHost struct {
+	Bmh *bmov1alpha1.BareMetalHost
+}
+
+type RemediatedHostClaim struct {
+	HostClaim *bmov1alpha1.HostClaim
+}
+
+type RemediatedHost interface {
+	GetObject() client.Object
+	GetPowerSpec() bool
+	GetPowerStatus() bool
+}
+
+func (rbmh RemediatedBareMetalHost) GetPowerSpec() bool { return rbmh.Bmh.Spec.Online }
+func (rhc RemediatedHostClaim) GetPowerSpec() bool      { return rhc.HostClaim.Spec.PoweredOn }
+func (rbmh RemediatedBareMetalHost) GetObject() client.Object {
+	if rbmh.Bmh == nil {
+		return nil
+	}
+	return rbmh.Bmh
+}
+
+func (rhc RemediatedHostClaim) GetObject() client.Object {
+	if rhc.HostClaim == nil {
+		return nil
+	}
+	return rhc.HostClaim
+}
+
+func (rbmh RemediatedBareMetalHost) GetPowerStatus() bool { return rbmh.Bmh.Status.PoweredOn }
+func (rhc RemediatedHostClaim) GetPowerStatus() bool      { return rhc.HostClaim.Status.PoweredOn }
+
 var outOfServiceTaint = &corev1.Taint{
 	Key:    "node.kubernetes.io/out-of-service",
 	Value:  "nodeshutdown",
@@ -102,16 +139,31 @@ type RemediationManager struct {
 	Metal3Machine       *infrav1.Metal3Machine
 	Machine             *clusterv1.Machine
 	Log                 logr.Logger
+	RemoteClient        client.Client
+	RemoteNamespace     string
 }
 
 // enforce implementation of interface.
 var _ RemediationManagerInterface = &RemediationManager{}
 
 // NewRemediationManager returns a new helper for managing a Metal3Remediation object.
-func NewRemediationManager(client client.Client, capiClientGetter ClientGetter,
+func NewRemediationManager(ctx context.Context, client client.Client, clientCache RemoteClientCacheInterface, capiClientGetter ClientGetter,
 	storageClientGetter StorageClientGetter,
 	metal3remediation *infrav1.Metal3Remediation, metal3Machine *infrav1.Metal3Machine, machine *clusterv1.Machine,
 	remediationLog logr.Logger) (*RemediationManager, error) {
+	var remoteNamespace string
+	var remoteClient *RemoteClient
+	if clientCache != nil {
+		var err error
+		remoteClient, err = clientCache.GetRemoteClient(ctx, remediationLog, metal3Machine)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if remoteClient != nil {
+		remoteNamespace = remoteClient.Namespace
+	}
+
 	return &RemediationManager{
 		Client:              client,
 		CapiClientGetter:    capiClientGetter,
@@ -120,6 +172,8 @@ func NewRemediationManager(client client.Client, capiClientGetter ClientGetter,
 		Metal3Machine:       metal3Machine,
 		Machine:             machine,
 		Log:                 remediationLog,
+		RemoteClient:        remoteClient,
+		RemoteNamespace:     remoteNamespace,
 	}, nil
 }
 
@@ -174,19 +228,19 @@ func (r *RemediationManager) TimeToRemediate(timeoutSeconds int32) (bool, time.D
 
 // SetPowerOffAnnotation sets poweroff annotation on unhealthy host.
 func (r *RemediationManager) SetPowerOffAnnotation(ctx context.Context) error {
-	r.Log.V(VerbosityLevelTrace).Info("Setting PowerOff annotation",
-		LogFieldMetal3Remediation, r.Metal3Remediation.Name)
-	host, helper, err := r.GetUnhealthyHost(ctx)
+	r.Log.V(VerbosityLevelTrace).Info("Setting PowerOff annotation")
+	rhost, helper, err := r.GetUnhealthyHost(ctx)
 	if err != nil {
 		return err
 	}
+	host := rhost.GetObject()
 	if host == nil {
 		return errors.New("unable to set a PowerOff Annotation, Host not found")
 	}
 
 	r.Log.Info("Adding PowerOff annotation to BareMetalHost",
-		LogFieldHost, host.Name,
-		LogFieldNamespace, host.Namespace)
+		LogFieldHost, host.GetName(),
+		LogFieldNamespace, host.GetNamespace())
 	rebootMode := bmov1alpha1.RebootAnnotationArguments{}
 	rebootMode.Mode = bmov1alpha1.RebootModeHard
 	marshalledMode, err := json.Marshal(rebootMode)
@@ -194,11 +248,12 @@ func (r *RemediationManager) SetPowerOffAnnotation(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-
-	if host.Annotations == nil {
-		host.Annotations = make(map[string]string)
+	annotations := host.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string)
+		host.SetAnnotations(annotations)
 	}
-	host.Annotations[r.getPowerOffAnnotationKey()] = string(marshalledMode)
+	annotations[r.getPowerOffAnnotationKey()] = string(marshalledMode)
 	return helper.Patch(ctx, host)
 }
 
@@ -206,7 +261,8 @@ func (r *RemediationManager) SetPowerOffAnnotation(ctx context.Context) error {
 func (r *RemediationManager) RemovePowerOffAnnotation(ctx context.Context) error {
 	r.Log.V(VerbosityLevelTrace).Info("Removing PowerOff annotation",
 		LogFieldMetal3Remediation, r.Metal3Remediation.Name)
-	host, helper, err := r.GetUnhealthyHost(ctx)
+	rhost, helper, err := r.GetUnhealthyHost(ctx)
+	host := rhost.GetObject()
 	if err != nil {
 		return err
 	}
@@ -215,85 +271,163 @@ func (r *RemediationManager) RemovePowerOffAnnotation(ctx context.Context) error
 	}
 
 	r.Log.Info("Removing PowerOff annotation from BareMetalHost",
-		LogFieldHost, host.Name,
-		LogFieldNamespace, host.Namespace)
-	delete(host.Annotations, r.getPowerOffAnnotationKey())
+		LogFieldHost, host.GetName(),
+		LogFieldNamespace, host.GetNamespace())
+	delete(host.GetAnnotations(), r.getPowerOffAnnotationKey())
 	return helper.Patch(ctx, host)
 }
 
 // IsPowerOffRequested returns true if poweroff annotation is set.
 func (r *RemediationManager) IsPowerOffRequested(ctx context.Context) (bool, error) {
 	r.Log.V(VerbosityLevelTrace).Info("Checking if PowerOff is requested")
-	host, _, err := r.GetUnhealthyHost(ctx)
+	rhost, _, err := r.GetUnhealthyHost(ctx)
 	if err != nil {
 		return false, err
 	}
+	host := rhost.GetObject()
 	if host == nil {
 		return false, errors.New("unable to check PowerOff Annotation, Host not found")
 	}
 
-	if _, ok := host.Annotations[r.getPowerOffAnnotationKey()]; ok {
-		r.Log.V(VerbosityLevelDebug).Info("PowerOff annotation is set", LogFieldHost, host.Name)
+	if _, ok := host.GetAnnotations()[r.getPowerOffAnnotationKey()]; ok {
+		r.Log.V(VerbosityLevelDebug).Info("PowerOff annotation is set", LogFieldHost, host.GetName())
 		return true, nil
 	}
-	r.Log.V(VerbosityLevelDebug).Info("PowerOff annotation is not set", LogFieldHost, host.Name)
+	r.Log.V(VerbosityLevelDebug).Info("PowerOff annotation is not set", LogFieldHost, host.GetName())
 	return false, nil
 }
 
 // IsPoweredOn returns true if the host is powered on.
 func (r *RemediationManager) IsPoweredOn(ctx context.Context) (bool, error) {
 	r.Log.V(VerbosityLevelTrace).Info("Checking if host is powered on")
-	host, _, err := r.GetUnhealthyHost(ctx)
+	rhost, _, err := r.GetUnhealthyHost(ctx)
 	if err != nil {
 		return false, err
 	}
+	host := rhost.GetObject()
 	if host == nil {
 		return false, errors.New("unable to check power status, Host not found")
 	}
-
-	r.Log.V(VerbosityLevelDebug).Info("Host power status",
-		LogFieldHost, host.Name,
-		LogFieldPoweredOn, host.Status.PoweredOn)
-	return host.Status.PoweredOn, nil
+	return rhost.GetPowerStatus(), nil
 }
 
 // SetUnhealthyAnnotation sets capm3.UnhealthyAnnotation on unhealthy host.
+// On the HostClaim backend the claim is additionally quarantined: its workload
+// spec is cleared, its ConsumerRef is retargeted at a sentinel so no other
+// Metal3Machine (including node-reuse) will adopt it, and the ClusterNameLabel
+// is dropped so cluster teardown does not sweep it up. The quarantined claim
+// stays bound to its BareMetalHost — baremetal-operator will deprovision the
+// workload but will not release the BMH while a ConsumerRef is set, so the
+// suspect hardware stays out of the pool until an operator deletes the
+// quarantined HostClaim by hand.
 func (r *RemediationManager) SetUnhealthyAnnotation(ctx context.Context) error {
 	r.Log.V(VerbosityLevelTrace).Info("Setting Unhealthy annotation")
-	host, helper, err := r.GetUnhealthyHost(ctx)
+	rhost, helper, err := r.GetUnhealthyHost(ctx)
 	if err != nil {
 		return err
 	}
+	host := rhost.GetObject()
 	if host == nil {
 		return errors.New("unable to set an Unhealthy Annotation, Host not found")
 	}
 
-	r.Log.Info("Adding Unhealthy annotation to BareMetalHost",
-		LogFieldHost, host.Name,
-		LogFieldNamespace, host.Namespace)
-	if host.Annotations == nil {
-		host.Annotations = make(map[string]string, 1)
+	r.Log.Info("Adding Unhealthy annotation to host",
+		LogFieldHost, host.GetName(),
+		LogFieldNamespace, host.GetNamespace())
+	annotations := host.GetAnnotations()
+	if annotations == nil {
+		annotations = make(map[string]string, 1)
+		host.SetAnnotations(annotations)
 	}
-	host.Annotations[infrav1.UnhealthyAnnotation] = "capm3/UnhealthyNode"
+	annotations[infrav1.UnhealthyAnnotation] = "capm3/UnhealthyNode"
+
+	if hostclaim, ok := host.(*bmov1alpha1.HostClaim); ok {
+		r.Log.Info("Quarantining HostClaim after failed remediation",
+			LogFieldHost, hostclaim.GetName(),
+			LogFieldNamespace, hostclaim.GetNamespace())
+		annotations[QuarantinedAnnotation] = time.Now().UTC().Format(time.RFC3339)
+		hostclaim.Spec.Image = nil
+		hostclaim.Spec.UserData = nil
+		hostclaim.Spec.NetworkData = nil
+		hostclaim.Spec.MetaData = nil
+		hostclaim.Spec.PoweredOn = false
+		hostclaim.Spec.ConsumerRef = &corev1.ObjectReference{
+			Name:       r.Metal3Remediation.Name,
+			Namespace:  r.Metal3Remediation.Namespace,
+			Kind:       "Metal3Remediation",
+			APIVersion: infrav1.GroupVersion.String(),
+		}
+		delete(hostclaim.Labels, clusterv1.ClusterNameLabel)
+	}
+
 	return helper.Patch(ctx, host)
 }
 
 // GetUnhealthyHost gets the associated host for unhealthy machine. Returns nil if not found. Assumes the
 // host is in the same namespace as the unhealthy machine.
-func (r *RemediationManager) GetUnhealthyHost(ctx context.Context) (*bmov1alpha1.BareMetalHost, *patch.Helper, error) {
-	r.Log.V(VerbosityLevelTrace).Info("Getting unhealthy BareMetalHost")
-	host, err := getUnhealthyHost(ctx, r.Metal3Machine, r.Client, r.Log)
-	if err != nil || host == nil {
-		return host, nil, err
+func (r *RemediationManager) GetUnhealthyHost(ctx context.Context) (RemediatedHost, *patch.Helper, error) {
+	if r.Metal3Machine == nil {
+		return nil, nil, errors.New("no Metal3 Machine")
 	}
-	r.Log.V(VerbosityLevelDebug).Info("Found unhealthy BareMetalHost",
-		LogFieldHost, host.Name,
-		LogFieldState, host.Status.Provisioning.State)
-	helper, err := patch.NewHelper(host, r.Client)
-	return host, helper, err
+	if r.Metal3Machine.Spec.HostSelector == nil || r.Metal3Machine.Spec.HostSelector.HostClaim != infrav1.HostClaimEnabled {
+		r.Log.V(VerbosityLevelTrace).Info("Getting unhealthy BareMetalHost")
+		host, err := getUnhealthyBareMetalHost(ctx, r.Metal3Machine, r.Client, r.Log)
+		if err != nil || host == nil {
+			return RemediatedBareMetalHost{host}, nil, err
+		}
+		r.Log.V(VerbosityLevelDebug).Info("Found unhealthy BareMetalHost",
+			LogFieldHost, host.Name,
+			LogFieldState, host.Status.Provisioning.State)
+		helper, err := patch.NewHelper(host, r.Client)
+		return RemediatedBareMetalHost{host}, helper, err
+	}
+	r.Log.V(VerbosityLevelTrace).Info("Getting unhealthy HostClaim")
+	namespace := r.Metal3Machine.Namespace
+	cl := r.Client
+	if r.RemoteClient != nil {
+		cl = r.RemoteClient
+		namespace = r.RemoteNamespace
+	}
+	host, err := getUnhealthyHostClaim(ctx, r.Metal3Machine, cl, namespace, r.Log)
+	if err != nil || host == nil {
+		return RemediatedHostClaim{host}, nil, err
+	}
+	r.Log.V(VerbosityLevelDebug).Info("Found unhealthy HostClaim",
+		LogFieldHost, host.Name)
+	helper, err := patch.NewHelper(host, cl)
+	return RemediatedHostClaim{host}, helper, err
 }
 
-func getUnhealthyHost(ctx context.Context, m3Machine *infrav1.Metal3Machine, cl client.Client,
+func getUnhealthyHostClaim(ctx context.Context, m3Machine *infrav1.Metal3Machine, cl client.Client, hostNamespace string,
+	rLog logr.Logger,
+) (*bmov1alpha1.HostClaim, error) {
+	annotations := m3Machine.ObjectMeta.GetAnnotations()
+	if annotations == nil {
+		err := fmt.Errorf("unable to get %s annotations", m3Machine.Name)
+		return nil, err
+	}
+	hostName, ok := annotations[HostClaimAnnotation]
+	if !ok {
+		err := fmt.Errorf("unable to get %s HostAnnotation", m3Machine.Name)
+		return nil, err
+	}
+
+	host := bmov1alpha1.HostClaim{}
+	key := client.ObjectKey{
+		Name:      hostName,
+		Namespace: hostNamespace,
+	}
+	err := cl.Get(ctx, key, &host)
+	if apierrors.IsNotFound(err) {
+		rLog.Info("Annotated host not found", "hostclaim", hostName, "namespace", hostNamespace)
+		return nil, err
+	} else if err != nil {
+		return nil, err
+	}
+	return &host, nil
+}
+
+func getUnhealthyBareMetalHost(ctx context.Context, m3Machine *infrav1.Metal3Machine, cl client.Client,
 	rLog logr.Logger,
 ) (*bmov1alpha1.BareMetalHost, error) {
 	annotations := m3Machine.ObjectMeta.GetAnnotations()
@@ -333,9 +467,13 @@ func getUnhealthyHost(ctx context.Context, m3Machine *infrav1.Metal3Machine, cl 
 	return &host, nil
 }
 
-// OnlineStatus returns hosts Online field value.
-func (r *RemediationManager) OnlineStatus(host *bmov1alpha1.BareMetalHost) bool {
-	return host.Spec.Online
+// PowerSpec returns hosts Online field value.
+func (r *RemediationManager) PowerSpec(ctx context.Context) (bool, error) {
+	rhost, _, err := r.GetUnhealthyHost(ctx)
+	if err != nil {
+		return false, err
+	}
+	return rhost.GetPowerSpec(), nil
 }
 
 // GetRemediationType return type of remediation strategy.
