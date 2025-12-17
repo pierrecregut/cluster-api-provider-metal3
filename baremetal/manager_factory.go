@@ -46,16 +46,23 @@ type ManagerFactoryInterface interface {
 	NewRemediationManager(*infrav1.Metal3Remediation, *infrav1.Metal3Machine, *clusterv1.Machine, logr.Logger) (
 		RemediationManagerInterface, error,
 	)
+	GetRemoteClientCache() RemoteClientCacheInterface
 }
 
 // ManagerFactory only contains a client.
 type ManagerFactory struct {
-	client client.Client
+	client            client.Client
+	RemoteClientCache RemoteClientCacheInterface
 }
 
 // NewManagerFactory returns a new factory.
 func NewManagerFactory(client client.Client) ManagerFactory {
-	return ManagerFactory{client: client}
+	remoteClientCache := NewRemoteClientCache(client)
+	return ManagerFactory{client: client, RemoteClientCache: remoteClientCache}
+}
+
+func (f ManagerFactory) GetRemoteClientCache() RemoteClientCacheInterface {
+	return f.RemoteClientCache
 }
 
 // NewClusterManager creates a new ClusterManager.
@@ -68,6 +75,12 @@ func (f ManagerFactory) NewMachineManager(capiCluster *clusterv1.Cluster,
 	capm3Cluster *infrav1.Metal3Cluster,
 	capiMachine *clusterv1.Machine, capm3Machine *infrav1.Metal3Machine,
 	machineLog logr.Logger) (MachineManagerInterface, error) {
+	// Even if the factory is somewhat an overkill. We implement the choice
+	//  over machineManager at that level
+	if capm3Machine.Spec.HostSelector.InNamespace != nil {
+		return NewMachineHostManager(f.client, f.RemoteClientCache, capiCluster, capm3Cluster,
+			capiMachine, capm3Machine, machineLog)
+	}
 	return NewMachineManager(f.client, capiCluster, capm3Cluster, capiMachine,
 		capm3Machine, machineLog)
 }

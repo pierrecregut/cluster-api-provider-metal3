@@ -492,12 +492,14 @@ func setupReconcilers(ctx context.Context, mgr ctrl.Manager) {
 		setupLog.Error(err, "Unable to create ClusterCache")
 		os.Exit(1)
 	}
+	managerFactory := baremetal.NewManagerFactory(mgr.GetClient())
 	if err = (&controllers.Metal3MachineReconciler{
 		Client:           mgr.GetClient(),
 		ClusterCache:     clusterCache,
-		ManagerFactory:   baremetal.NewManagerFactory(mgr.GetClient()),
+		ManagerFactory:   managerFactory,
 		Log:              ctrl.Log.WithName("controllers").WithName("Metal3Machine"),
 		CapiClientGetter: infraremote.NewClusterClient,
+		RemoteClients:    managerFactory.GetRemoteClientCache(),
 		WatchFilterValue: watchFilterValue,
 	}).SetupWithManager(ctx, mgr, concurrency(metal3MachineConcurrency)); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Metal3MachineReconciler")

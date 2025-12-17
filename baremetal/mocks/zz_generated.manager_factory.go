@@ -55,6 +55,20 @@ func (m *MockManagerFactoryInterface) EXPECT() *MockManagerFactoryInterfaceMockR
 	return m.recorder
 }
 
+// GetRemoteClientCache mocks base method.
+func (m *MockManagerFactoryInterface) GetRemoteClientCache() baremetal.RemoteClientCacheInterface {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetRemoteClientCache")
+	ret0, _ := ret[0].(baremetal.RemoteClientCacheInterface)
+	return ret0
+}
+
+// GetRemoteClientCache indicates an expected call of GetRemoteClientCache.
+func (mr *MockManagerFactoryInterfaceMockRecorder) GetRemoteClientCache() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetRemoteClientCache", reflect.TypeOf((*MockManagerFactoryInterface)(nil).GetRemoteClientCache))
+}
+
 // NewClusterManager mocks base method.
 func (m *MockManagerFactoryInterface) NewClusterManager(cluster *v1beta2.Cluster, metal3Cluster *v1beta1.Metal3Cluster, clusterLog logr.Logger) (baremetal.ClusterManagerInterface, error) {
 	m.ctrl.T.Helper()
