@@ -57,7 +57,8 @@ func setReconcileNormalExpectations(ctrl *gomock.Controller,
 	m := baremetal_mocks.NewMockMachineManagerInterface(ctrl)
 
 	m.EXPECT().SetFinalizer()
-
+	m.EXPECT().GetClient().AnyTimes().Return(nil)
+	m.EXPECT().GetCluster().AnyTimes().Return(nil)
 	// provisioned, we should only call Update, nothing else
 	m.EXPECT().IsProvisioned().Return(tc.Provisioned)
 	if tc.Provisioned {
@@ -132,8 +133,9 @@ func setReconcileNormalExpectations(ctrl *gomock.Controller,
 		}
 
 		m.EXPECT().IsBaremetalHostProvisioned(context.TODO()).Return(true)
-		m.EXPECT().NodeWithMatchingProviderIDExists(context.TODO(), nil).Return(false)
-		m.EXPECT().SetProviderIDFromNodeLabel(context.TODO(), nil).Return(true, nil)
+		m.EXPECT().Metal3MachineHasProviderID().Return(false)
+		m.EXPECT().GetLog().AnyTimes().Return(GinkgoLogr)
+		m.EXPECT().SetProviderIDFromNodeLabel(context.TODO(), gomock.Any(), gomock.Any()).Return(true, nil)
 		m.EXPECT().SetReadyTrue()
 	}
 

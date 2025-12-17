@@ -26,11 +26,16 @@ import (
 	context "context"
 	reflect "reflect"
 
+	logr "github.com/go-logr/logr"
 	gomock "github.com/golang/mock/gomock"
+	v1beta1 "github.com/metal3-io/cluster-api-provider-metal3/api/v1beta1"
 	baremetal "github.com/metal3-io/cluster-api-provider-metal3/baremetal"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	v1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	v1 "k8s.io/api/core/v1"
+	v10 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	v1beta10 "sigs.k8s.io/cluster-api/api/core/v1beta1"
+	v1beta2 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	errors "sigs.k8s.io/cluster-api/errors"
+	client "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // MockMachineManagerInterface is a mock of MachineManagerInterface interface.
@@ -124,6 +129,137 @@ func (m *MockMachineManagerInterface) DissociateM3Metadata(arg0 context.Context)
 func (mr *MockMachineManagerInterfaceMockRecorder) DissociateM3Metadata(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DissociateM3Metadata", reflect.TypeOf((*MockMachineManagerInterface)(nil).DissociateM3Metadata), arg0)
+}
+
+// GetBmhNameFromM3Machine mocks base method.
+func (m *MockMachineManagerInterface) GetBmhNameFromM3Machine(ctx context.Context) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetBmhNameFromM3Machine", ctx)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetBmhNameFromM3Machine indicates an expected call of GetBmhNameFromM3Machine.
+func (mr *MockMachineManagerInterfaceMockRecorder) GetBmhNameFromM3Machine(ctx interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetBmhNameFromM3Machine", reflect.TypeOf((*MockMachineManagerInterface)(nil).GetBmhNameFromM3Machine), ctx)
+}
+
+// GetBmhUIDFromM3Machine mocks base method.
+func (m *MockMachineManagerInterface) GetBmhUIDFromM3Machine(ctx context.Context) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetBmhUIDFromM3Machine", ctx)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetBmhUIDFromM3Machine indicates an expected call of GetBmhUIDFromM3Machine.
+func (mr *MockMachineManagerInterfaceMockRecorder) GetBmhUIDFromM3Machine(ctx interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetBmhUIDFromM3Machine", reflect.TypeOf((*MockMachineManagerInterface)(nil).GetBmhUIDFromM3Machine), ctx)
+}
+
+// GetClient mocks base method.
+func (m *MockMachineManagerInterface) GetClient() client.Client {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetClient")
+	ret0, _ := ret[0].(client.Client)
+	return ret0
+}
+
+// GetClient indicates an expected call of GetClient.
+func (mr *MockMachineManagerInterfaceMockRecorder) GetClient() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetClient", reflect.TypeOf((*MockMachineManagerInterface)(nil).GetClient))
+}
+
+// GetCluster mocks base method.
+func (m *MockMachineManagerInterface) GetCluster() *v1beta2.Cluster {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetCluster")
+	ret0, _ := ret[0].(*v1beta2.Cluster)
+	return ret0
+}
+
+// GetCluster indicates an expected call of GetCluster.
+func (mr *MockMachineManagerInterfaceMockRecorder) GetCluster() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetCluster", reflect.TypeOf((*MockMachineManagerInterface)(nil).GetCluster))
+}
+
+// GetLog mocks base method.
+func (m *MockMachineManagerInterface) GetLog() logr.Logger {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetLog")
+	ret0, _ := ret[0].(logr.Logger)
+	return ret0
+}
+
+// GetLog indicates an expected call of GetLog.
+func (mr *MockMachineManagerInterfaceMockRecorder) GetLog() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetLog", reflect.TypeOf((*MockMachineManagerInterface)(nil).GetLog))
+}
+
+// GetMachine mocks base method.
+func (m *MockMachineManagerInterface) GetMachine() *v1beta2.Machine {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetMachine")
+	ret0, _ := ret[0].(*v1beta2.Machine)
+	return ret0
+}
+
+// GetMachine indicates an expected call of GetMachine.
+func (mr *MockMachineManagerInterfaceMockRecorder) GetMachine() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMachine", reflect.TypeOf((*MockMachineManagerInterface)(nil).GetMachine))
+}
+
+// GetMetal3Machine mocks base method.
+func (m *MockMachineManagerInterface) GetMetal3Machine() *v1beta1.Metal3Machine {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetMetal3Machine")
+	ret0, _ := ret[0].(*v1beta1.Metal3Machine)
+	return ret0
+}
+
+// GetMetal3Machine indicates an expected call of GetMetal3Machine.
+func (mr *MockMachineManagerInterfaceMockRecorder) GetMetal3Machine() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMetal3Machine", reflect.TypeOf((*MockMachineManagerInterface)(nil).GetMetal3Machine))
+}
+
+// GetNodeByProviderID mocks base method.
+func (m *MockMachineManagerInterface) GetNodeByProviderID(ctx context.Context, providerIDLegacy, providerIDNew string, clientFactory baremetal.ClientGetter) (v1.Node, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetNodeByProviderID", ctx, providerIDLegacy, providerIDNew, clientFactory)
+	ret0, _ := ret[0].(v1.Node)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetNodeByProviderID indicates an expected call of GetNodeByProviderID.
+func (mr *MockMachineManagerInterfaceMockRecorder) GetNodeByProviderID(ctx, providerIDLegacy, providerIDNew, clientFactory interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetNodeByProviderID", reflect.TypeOf((*MockMachineManagerInterface)(nil).GetNodeByProviderID), ctx, providerIDLegacy, providerIDNew, clientFactory)
+}
+
+// GetNodesWithLabel mocks base method.
+func (m *MockMachineManagerInterface) GetNodesWithLabel(ctx context.Context, nodeLabel string, clientFactory baremetal.ClientGetter) (*v1.NodeList, int, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetNodesWithLabel", ctx, nodeLabel, clientFactory)
+	ret0, _ := ret[0].(*v1.NodeList)
+	ret1, _ := ret[1].(int)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
+}
+
+// GetNodesWithLabel indicates an expected call of GetNodesWithLabel.
+func (mr *MockMachineManagerInterfaceMockRecorder) GetNodesWithLabel(ctx, nodeLabel, clientFactory interface{}) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetNodesWithLabel", reflect.TypeOf((*MockMachineManagerInterface)(nil).GetNodesWithLabel), ctx, nodeLabel, clientFactory)
 }
 
 // GetProviderIDAndBMHID mocks base method.
@@ -225,20 +361,6 @@ func (mr *MockMachineManagerInterfaceMockRecorder) Metal3MachineHasProviderID() 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Metal3MachineHasProviderID", reflect.TypeOf((*MockMachineManagerInterface)(nil).Metal3MachineHasProviderID))
 }
 
-// NodeWithMatchingProviderIDExists mocks base method.
-func (m *MockMachineManagerInterface) NodeWithMatchingProviderIDExists(arg0 context.Context, arg1 baremetal.ClientGetter) bool {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "NodeWithMatchingProviderIDExists", arg0, arg1)
-	ret0, _ := ret[0].(bool)
-	return ret0
-}
-
-// NodeWithMatchingProviderIDExists indicates an expected call of NodeWithMatchingProviderIDExists.
-func (mr *MockMachineManagerInterfaceMockRecorder) NodeWithMatchingProviderIDExists(arg0, arg1 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "NodeWithMatchingProviderIDExists", reflect.TypeOf((*MockMachineManagerInterface)(nil).NodeWithMatchingProviderIDExists), arg0, arg1)
-}
-
 // RemovePauseAnnotation mocks base method.
 func (m *MockMachineManagerInterface) RemovePauseAnnotation(arg0 context.Context) error {
 	m.ctrl.T.Helper()
@@ -254,7 +376,7 @@ func (mr *MockMachineManagerInterfaceMockRecorder) RemovePauseAnnotation(arg0 in
 }
 
 // SetConditionMetal3MachineToFalse mocks base method.
-func (m *MockMachineManagerInterface) SetConditionMetal3MachineToFalse(arg0 v1beta1.ConditionType, arg1 string, arg2 v1beta1.ConditionSeverity, arg3 string, arg4 ...any) {
+func (m *MockMachineManagerInterface) SetConditionMetal3MachineToFalse(arg0 v1beta10.ConditionType, arg1 string, arg2 v1beta10.ConditionSeverity, arg3 string, arg4 ...any) {
 	m.ctrl.T.Helper()
 	varargs := []interface{}{arg0, arg1, arg2, arg3}
 	for _, a := range arg4 {
@@ -271,7 +393,7 @@ func (mr *MockMachineManagerInterfaceMockRecorder) SetConditionMetal3MachineToFa
 }
 
 // SetConditionMetal3MachineToTrue mocks base method.
-func (m *MockMachineManagerInterface) SetConditionMetal3MachineToTrue(arg0 v1beta1.ConditionType) {
+func (m *MockMachineManagerInterface) SetConditionMetal3MachineToTrue(arg0 v1beta10.ConditionType) {
 	m.ctrl.T.Helper()
 	m.ctrl.Call(m, "SetConditionMetal3MachineToTrue", arg0)
 }
@@ -280,20 +402,6 @@ func (m *MockMachineManagerInterface) SetConditionMetal3MachineToTrue(arg0 v1bet
 func (mr *MockMachineManagerInterfaceMockRecorder) SetConditionMetal3MachineToTrue(arg0 interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetConditionMetal3MachineToTrue", reflect.TypeOf((*MockMachineManagerInterface)(nil).SetConditionMetal3MachineToTrue), arg0)
-}
-
-// SetDefaultProviderID mocks base method.
-func (m *MockMachineManagerInterface) SetDefaultProviderID() error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetDefaultProviderID")
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// SetDefaultProviderID indicates an expected call of SetDefaultProviderID.
-func (mr *MockMachineManagerInterfaceMockRecorder) SetDefaultProviderID() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetDefaultProviderID", reflect.TypeOf((*MockMachineManagerInterface)(nil).SetDefaultProviderID))
 }
 
 // SetError mocks base method.
@@ -360,33 +468,19 @@ func (mr *MockMachineManagerInterfaceMockRecorder) SetProviderID(arg0 interface{
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetProviderID", reflect.TypeOf((*MockMachineManagerInterface)(nil).SetProviderID), arg0)
 }
 
-// SetProviderIDFromCloudProviderNode mocks base method.
-func (m *MockMachineManagerInterface) SetProviderIDFromCloudProviderNode(arg0 context.Context, arg1 baremetal.ClientGetter) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetProviderIDFromCloudProviderNode", arg0, arg1)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// SetProviderIDFromCloudProviderNode indicates an expected call of SetProviderIDFromCloudProviderNode.
-func (mr *MockMachineManagerInterfaceMockRecorder) SetProviderIDFromCloudProviderNode(arg0, arg1 interface{}) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetProviderIDFromCloudProviderNode", reflect.TypeOf((*MockMachineManagerInterface)(nil).SetProviderIDFromCloudProviderNode), arg0, arg1)
-}
-
 // SetProviderIDFromNodeLabel mocks base method.
-func (m *MockMachineManagerInterface) SetProviderIDFromNodeLabel(arg0 context.Context, arg1 baremetal.ClientGetter) (bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetProviderIDFromNodeLabel", arg0, arg1)
+func (m_2 *MockMachineManagerInterface) SetProviderIDFromNodeLabel(ctx context.Context, m baremetal.MachineManagerInterface, clientFactory baremetal.ClientGetter) (bool, error) {
+	m_2.ctrl.T.Helper()
+	ret := m_2.ctrl.Call(m_2, "SetProviderIDFromNodeLabel", ctx, m, clientFactory)
 	ret0, _ := ret[0].(bool)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // SetProviderIDFromNodeLabel indicates an expected call of SetProviderIDFromNodeLabel.
-func (mr *MockMachineManagerInterfaceMockRecorder) SetProviderIDFromNodeLabel(arg0, arg1 interface{}) *gomock.Call {
+func (mr *MockMachineManagerInterfaceMockRecorder) SetProviderIDFromNodeLabel(ctx, m, clientFactory interface{}) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetProviderIDFromNodeLabel", reflect.TypeOf((*MockMachineManagerInterface)(nil).SetProviderIDFromNodeLabel), arg0, arg1)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetProviderIDFromNodeLabel", reflect.TypeOf((*MockMachineManagerInterface)(nil).SetProviderIDFromNodeLabel), ctx, m, clientFactory)
 }
 
 // SetReadyTrue mocks base method.
@@ -402,7 +496,7 @@ func (mr *MockMachineManagerInterfaceMockRecorder) SetReadyTrue() *gomock.Call {
 }
 
 // SetV1beta2Condition mocks base method.
-func (m *MockMachineManagerInterface) SetV1beta2Condition(arg0 string, arg1 v1.ConditionStatus, arg2, arg3 string) {
+func (m *MockMachineManagerInterface) SetV1beta2Condition(arg0 string, arg1 v10.ConditionStatus, arg2, arg3 string) {
 	m.ctrl.T.Helper()
 	m.ctrl.Call(m, "SetV1beta2Condition", arg0, arg1, arg2, arg3)
 }

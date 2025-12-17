@@ -70,6 +70,7 @@ const (
 	requeueAfter       = time.Second * 30
 	bmRoleControlPlane = "control-plane"
 	bmRoleNode         = "node"
+	errRetrievingNode  = "error retrieving node, requeuing"
 	// PausedAnnotationKey is an annotation to be used for pausing a BMH.
 	PausedAnnotationKey = "metal3.io/capm3"
 	// ProviderIDPrefix is a prefix for ProviderID.
@@ -101,11 +102,8 @@ type MachineManagerInterface interface {
 	HasAnnotation() bool
 	GetProviderIDAndBMHID() (string, *string)
 	SetProviderID(string)
-	SetDefaultProviderID() error
-	SetProviderIDFromCloudProviderNode(context.Context, ClientGetter) error
-	SetProviderIDFromNodeLabel(context.Context, ClientGetter) (bool, error)
 	SetNodeProviderIDByHostname(context.Context, ClientGetter) error
-	NodeWithMatchingProviderIDExists(context.Context, ClientGetter) bool
+	SetProviderIDFromNodeLabel(ctx context.Context, m MachineManagerInterface, clientFactory ClientGetter) (success bool, err error)
 	Metal3MachineHasProviderID() bool
 	SetPauseAnnotation(context.Context) error
 	RemovePauseAnnotation(context.Context) error
@@ -117,6 +115,16 @@ type MachineManagerInterface interface {
 	SetV1beta2Condition(string, metav1.ConditionStatus, string, string)
 	CloudProviderEnabled() bool
 	SetReadyTrue()
+	//	GetMachineManager() *MachineManager
+	GetBmhUIDFromM3Machine(ctx context.Context) (string, error)
+	GetBmhNameFromM3Machine(ctx context.Context) (string, error)
+	GetNodeByProviderID(ctx context.Context, providerIDLegacy, providerIDNew string, clientFactory ClientGetter) (corev1.Node, error)
+	GetNodesWithLabel(ctx context.Context, nodeLabel string, clientFactory ClientGetter) (*corev1.NodeList, int, error)
+	GetMetal3Machine() *infrav1.Metal3Machine
+	GetMachine() *clusterv1.Machine
+	GetCluster() *clusterv1.Cluster
+	GetLog() logr.Logger
+	GetClient() client.Client
 }
 
 // MachineManager is responsible for performing machine reconciliation.
@@ -133,6 +141,8 @@ type MachineManager struct {
 	MachineSetList        *clusterv1.MachineSetList
 	Log                   logr.Logger
 }
+
+var _ MachineManagerInterface = &MachineManager{}
 
 // NewMachineManager returns a new helper for managing a machine.
 func NewMachineManager(client client.Client,
@@ -161,6 +171,12 @@ func NewMachineSetManager(client client.Client,
 		Log:            machineLog,
 	}, nil
 }
+
+func (m *MachineManager) GetMetal3Machine() *infrav1.Metal3Machine { return m.Metal3Machine }
+func (m *MachineManager) GetCluster() *clusterv1.Cluster           { return m.Cluster }
+func (m *MachineManager) GetLog() logr.Logger                      { return m.Log }
+func (m *MachineManager) GetClient() client.Client                 { return m.client }
+func (m *MachineManager) GetMachine() *clusterv1.Machine           { return m.Machine }
 
 // SetFinalizer sets finalizer.
 func (m *MachineManager) SetFinalizer() {
@@ -1296,7 +1312,7 @@ func (m *MachineManager) GetProviderIDAndBMHID() (string, *string) {
 // ClientGetter prototype.
 type ClientGetter func(ctx context.Context, c client.Client, cluster *clusterv1.Cluster) (clientcorev1.CoreV1Interface, error)
 
-func (m *MachineManager) setNodeProviderID(ctx context.Context, client clientcorev1.CoreV1Interface, node corev1.Node, providerID string) error {
+func setNodeProviderID(ctx context.Context, client clientcorev1.CoreV1Interface, node corev1.Node, providerID string) error {
 	oldData, err := json.Marshal(node)
 	if err != nil {
 		return fmt.Errorf("failed to json.Marshal node: %w", err)
@@ -1341,36 +1357,38 @@ func (m *MachineManager) SetProviderID(providerID string) {
 }
 
 // SetDefaultProviderID sets the ProviderID on this Metal3Machine using the new format.
-func (m *MachineManager) SetDefaultProviderID() error {
-	namespace := m.Metal3Machine.GetNamespace()
-	m3mName := m.Metal3Machine.GetName()
-	bmhName, err := m.getBmhNameFromM3Machine()
+func SetDefaultProviderID(ctx context.Context, m MachineManagerInterface) error {
+	m3m := m.GetMetal3Machine()
+	namespace := m3m.Namespace
+	m3mName := m3m.Name
+	bmhName, err := m.GetBmhNameFromM3Machine(ctx)
 
 	if err != nil {
 		return err
 	}
 
 	providerID := fmt.Sprintf("metal3://%s/%s/%s", namespace, bmhName, m3mName)
-	m.Log.Info("Setting default providerID on the Metal3Machine", "providerID", providerID, "m3mName", m3mName, "bmhName", bmhName)
+	m.GetLog().Info("Setting default providerID on the Metal3Machine", "providerID", providerID, "m3mName", m3mName, "bmhName", bmhName)
 	m.SetProviderID(providerID)
 	return nil
 }
 
 // getPossibleProviderIDs returns the ProviderID for this Metal3Machine in the legacy and the new format.
-func (m *MachineManager) getPossibleProviderIDs(ctx context.Context) (providerIDLegacy string, providerIDNew string, err error) {
-	namespace := m.Metal3Machine.GetNamespace()
-	m3mName := m.Metal3Machine.GetName()
-	bmhName, err := m.getBmhNameFromM3Machine()
+func getPossibleProviderIDs(ctx context.Context, m MachineManagerInterface) (providerIDLegacy string, providerIDNew string, err error) {
+	m3m := m.GetMetal3Machine()
+	namespace := m3m.Namespace
+	m3mName := m3m.Name
+	bmhName, err := m.GetBmhNameFromM3Machine(ctx)
 	if err != nil {
 		errMessage := "unable to retrieve BMH name from Metal3Machine"
-		m.Log.Info(errMessage)
+		m.GetLog().Info(errMessage)
 		err = errors.Wrap(err, errMessage)
 		return
 	}
-	bmhUID, err := m.getBmhUIDFromM3Machine(ctx)
+	bmhUID, err := m.GetBmhUIDFromM3Machine(ctx)
 	if err != nil {
 		errMessage := "unable to retrieve BMH UID from Metal3Machine"
-		m.Log.Info(errMessage)
+		m.GetLog().Info(errMessage)
 		err = errors.Wrap(err, errMessage)
 		return
 	}
@@ -1381,16 +1399,16 @@ func (m *MachineManager) getPossibleProviderIDs(ctx context.Context) (providerID
 }
 
 // SetProviderIDFromCloudProviderNode finds a Node by ProviderID and copies that ProviderID to the Metal3Machine.
-func (m *MachineManager) SetProviderIDFromCloudProviderNode(ctx context.Context, clientFactory ClientGetter) error {
-	providerIDLegacy, providerIDNew, err := m.getPossibleProviderIDs(ctx)
+func SetProviderIDFromCloudProviderNode(ctx context.Context, m MachineManagerInterface, clientFactory ClientGetter) error {
+	providerIDLegacy, providerIDNew, err := getPossibleProviderIDs(ctx, m)
 	if err != nil {
 		return WithTransientError(err, requeueAfter)
 	}
 
-	node, err := m.getNodeByProviderID(ctx, providerIDLegacy, providerIDNew, clientFactory)
+	node, err := m.GetNodeByProviderID(ctx, providerIDLegacy, providerIDNew, clientFactory)
 	if err != nil {
 		errMessage := "error retrieving node, requeuing"
-		m.Log.Info(errMessage)
+		m.GetLog().Info(errMessage)
 		return WithTransientError(errors.New(errMessage), requeueAfter)
 	}
 
@@ -1399,62 +1417,63 @@ func (m *MachineManager) SetProviderIDFromCloudProviderNode(ctx context.Context,
 	return nil
 }
 
-func (m *MachineManager) NodeWithMatchingProviderIDExists(ctx context.Context, clientFactory ClientGetter) bool {
+func NodeWithMatchingProviderIDExists(ctx context.Context, m MachineManagerInterface, clientFactory ClientGetter) bool {
 	if !m.Metal3MachineHasProviderID() {
 		return false
 	}
 
-	providerIDLegacy, providerIDNew, err := m.getPossibleProviderIDs(ctx)
+	providerIDLegacy, providerIDNew, err := getPossibleProviderIDs(ctx, m)
 	if err != nil {
 		return false
 	}
 
-	node, err := m.getNodeByProviderID(ctx, providerIDLegacy, providerIDNew, clientFactory)
+	node, err := m.GetNodeByProviderID(ctx, providerIDLegacy, providerIDNew, clientFactory)
 	if err != nil {
 		errMessage := "error retrieving node, requeuing"
-		m.Log.Info(errMessage)
+		m.GetLog().Info(errMessage)
 		return false
 	}
 
-	m.Log.Info("matching node found", "node", node.GetName(), "providerID", node.Spec.ProviderID)
+	m.GetLog().Info("matching node found", "node", node.GetName(), "providerID", node.Spec.ProviderID)
 	return true
 }
 
 // SetProviderIDFromNodeLabel finds a Node by label and sets ProviderID on it.
-func (m *MachineManager) SetProviderIDFromNodeLabel(ctx context.Context, clientFactory ClientGetter) (success bool, err error) {
-	corev1Remote, err := clientFactory(ctx, m.client, m.Cluster)
+func (_ MachineManager) SetProviderIDFromNodeLabel(ctx context.Context, m MachineManagerInterface, clientFactory ClientGetter) (success bool, err error) {
+	log := m.GetLog()
+	corev1Remote, err := clientFactory(ctx, m.GetClient(), m.GetCluster())
 	if err != nil {
 		return false, errors.Wrap(err, "Error creating a remote client")
 	}
-	bmhUID, err := m.getBmhUIDFromM3Machine(ctx)
+	bmhUID, err := m.GetBmhUIDFromM3Machine(ctx)
 	if err != nil {
 		errMessage := "unable to retrieve BMH UID from Metal3Machine"
-		m.Log.Info(errMessage)
+		m.GetLog().Info(errMessage)
 		return false, WithTransientError(errors.New(errMessage), requeueAfter)
 	}
 
 	nodeLabel := fmt.Sprintf("%s=%s", ProviderLabelPrefix, bmhUID)
-	nodes, countNodesWithLabel, err := m.getNodesWithLabel(ctx, nodeLabel, clientFactory)
+	nodes, countNodesWithLabel, err := m.GetNodesWithLabel(ctx, nodeLabel, clientFactory)
 	if err != nil {
 		errMessage := fmt.Sprintf("error retrieving node with label %s, requeuing", nodeLabel)
-		m.Log.Info(errMessage)
+		log.Info(errMessage)
 		return false, WithTransientError(errors.Wrap(err, errMessage), requeueAfter)
 	}
-	if countNodesWithLabel == 0 && m.Machine.Spec.Bootstrap.ConfigRef.IsDefined() {
+	if countNodesWithLabel == 0 && m.GetMachine().Spec.Bootstrap.ConfigRef.IsDefined() {
 		// The node could either be still running cloud-init or have been
 		// deleted manually. TODO: handle a manual deletion case.
 		errMessage := "requeuing, could not find node with label: " + nodeLabel
-		m.Log.Info(errMessage)
+		log.Info(errMessage)
 		return false, WithTransientError(errors.New(errMessage), requeueAfter)
 	}
 	if countNodesWithLabel > 1 {
 		return false, errors.Wrap(err, fmt.Sprintf("Found multiple target nodes with the same label: (%s)", nodeLabel))
 	}
 
-	providerIDLegacy, providerIDNew, err := m.getPossibleProviderIDs(ctx)
+	providerIDLegacy, providerIDNew, err := getPossibleProviderIDs(ctx, m)
 	if err != nil {
 		errMessage := fmt.Sprintf("unable to retrieve BMH name from Metal3Machine: %v", err)
-		m.Log.Info(errMessage)
+		log.Info(errMessage)
 		return false, WithTransientError(errors.New(errMessage), requeueAfter)
 	}
 
@@ -1465,7 +1484,7 @@ func (m *MachineManager) SetProviderIDFromNodeLabel(ctx context.Context, clientF
 			// By default we use the new format, if not set on the node.
 			m.SetProviderID(providerIDNew)
 			m.SetReadyTrue()
-			err = m.setNodeProviderID(ctx, corev1Remote, node, providerIDNew)
+			err = setNodeProviderID(ctx, corev1Remote, node, providerIDNew)
 
 			if err != nil {
 				return false, err
@@ -1486,7 +1505,7 @@ func (m *MachineManager) SetProviderIDFromNodeLabel(ctx context.Context, clientF
 			return true, nil
 		}
 
-		m.Log.Info("node using unsupported providerID format", "providerID", providerIDOnNode, "providerIDLegacy", providerIDLegacy, "providerIDNew", providerIDNew)
+		log.Info("node using unsupported providerID format", "providerID", providerIDOnNode, "providerIDLegacy", providerIDLegacy, "providerIDNew", providerIDNew)
 		return false, errors.Wrap(err, "node using unsupported providerID format")
 	}
 
@@ -1893,8 +1912,8 @@ func (m *MachineManager) getMachineSet(ctx context.Context) (*clusterv1.MachineS
 	return nil, errors.New(machineSetError)
 }
 
-// getBmhNameFromM3Machine retrieves bmhName from m3m annotations.
-func (m *MachineManager) getBmhNameFromM3Machine() (string, error) {
+// GetBmhNameFromM3Machine retrieves bmhName from m3m annotations.
+func (m *MachineManager) GetBmhNameFromM3Machine(_ context.Context) (string, error) {
 	annotationValue := m.Metal3Machine.ObjectMeta.GetAnnotations()[HostAnnotation]
 	valueParts := strings.Split(annotationValue, "/")
 	//nolint:mnd
@@ -1906,8 +1925,8 @@ func (m *MachineManager) getBmhNameFromM3Machine() (string, error) {
 	return bmhName, nil
 }
 
-// getBmhUIDFromM3Machine retrieves bmhUID from m3m.
-func (m *MachineManager) getBmhUIDFromM3Machine(ctx context.Context) (string, error) {
+// GetBmhUIDFromM3Machine retrieves bmhUID from m3m.
+func (m *MachineManager) GetBmhUIDFromM3Machine(ctx context.Context) (string, error) {
 	host, err := getHost(ctx, m.Metal3Machine, m.client, m.Log)
 	if err != nil || host == nil {
 		errMessage := "Failed to get a BaremetalHost for the metal3machine: " + m.Metal3Machine.GetName()
@@ -1919,8 +1938,8 @@ func (m *MachineManager) getBmhUIDFromM3Machine(ctx context.Context) (string, er
 	return string(host.UID), nil
 }
 
-// getNodesWithLabel gets kubernetes nodes with a given label.
-func (m *MachineManager) getNodesWithLabel(ctx context.Context, nodeLabel string, clientFactory ClientGetter) (*corev1.NodeList, int, error) {
+// GetNodesWithLabel gets kubernetes nodes with a given label.
+func (m *MachineManager) GetNodesWithLabel(ctx context.Context, nodeLabel string, clientFactory ClientGetter) (*corev1.NodeList, int, error) {
 	corev1Remote, err := clientFactory(ctx, m.client, m.Cluster)
 	if err != nil {
 		return nil, 0, errors.Wrap(err, "Error creating a remote client")
@@ -1998,7 +2017,7 @@ func (m *MachineManager) SetNodeProviderIDByHostname(ctx context.Context, client
 
 	m.Log.Info("found a node, setting provider id on it", "node", node.Name)
 
-	err = m.setNodeProviderID(ctx, corev1Remote, node, *m.Metal3Machine.Spec.ProviderID)
+	err = setNodeProviderID(ctx, corev1Remote, node, *m.Metal3Machine.Spec.ProviderID)
 
 	if err != nil {
 		return errors.Wrap(err, "unable to update the target node with providerID")
@@ -2008,7 +2027,7 @@ func (m *MachineManager) SetNodeProviderIDByHostname(ctx context.Context, client
 	return nil
 }
 
-func (m *MachineManager) getNodeByProviderID(ctx context.Context, providerIDLegacy, providerIDNew string, clientFactory ClientGetter) (corev1.Node, error) {
+func (m *MachineManager) GetNodeByProviderID(ctx context.Context, providerIDLegacy, providerIDNew string, clientFactory ClientGetter) (corev1.Node, error) {
 	corev1Remote, err := clientFactory(ctx, m.client, m.Cluster)
 	if err != nil {
 		return corev1.Node{}, errors.Wrap(err, "Error creating a remote client")
@@ -2033,7 +2052,7 @@ func (m *MachineManager) getNodeByProviderID(ctx context.Context, providerIDLega
 		} else if providerIDOnNode == providerIDLegacy {
 			matchingNodeProviderID = providerIDLegacy
 		} else {
-			m.Log.Info("The node does not match expected providerID. Considering other nodes ", "node", node.GetName(), "providerID", providerIDOnNode)
+			m.Log.Info("The node does not match expected providerID. Considering other nodes ", "node", node.GetName(), "providerID", providerIDOnNode, "legacyId", providerIDLegacy, "newId", providerIDNew)
 		}
 		if providerIDOnNode != "" && node.GetName() != "" {
 			validNodes[providerIDOnNode] = append(validNodes[providerIDOnNode], node)
