@@ -27,6 +27,8 @@ require (
 
 replace github.com/metal3-io/cluster-api-provider-metal3/api => ./api
 
+replace github.com/metal3-io/baremetal-operator/apis => gitlab.com/Orange-OpenSource/kanod/baremetal-operator/apis v0.12.0-beta.0
+
 require (
 	cel.dev/expr v0.24.0 // indirect
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
