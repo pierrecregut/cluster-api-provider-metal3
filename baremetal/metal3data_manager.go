@@ -25,7 +25,6 @@ import (
 	"strings"
 
 	"github.com/go-logr/logr"
-	bmov1alpha1 "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
 	infrav1 "github.com/metal3-io/cluster-api-provider-metal3/api/v1beta1"
 	ipamv1 "github.com/metal3-io/ip-address-manager/api/v1alpha1"
 	"github.com/pkg/errors"
@@ -46,6 +45,7 @@ import (
 const (
 	m3machine         = "metal3machine"
 	host              = "baremetalhost"
+	hostclaim         = "hostclaim"
 	capimachine       = "machine"
 	DataLabelName     = "infrastructure.cluster.x-k8s.io/data-name"
 	PoolLabelName     = "infrastructure.cluster.x-k8s.io/pool-name"
@@ -205,17 +205,14 @@ func (m *DataManager) createSecrets(ctx context.Context) error {
 			m.Log.Info("NetworkData secret creation needed", "secret", m.Data.Spec.NetworkData.Name)
 		}
 	}
-
 	// No secret needs creation
 	if metaDataErr == nil && networkDataErr == nil {
 		m.Log.Info("Metal3Data Reconciled")
 		m.Data.Status.Ready = true
 		return nil
 	}
-
 	// Fetch the Machine.
 	capiMachine, err := util.GetOwnerMachine(ctx, m.client, m3m.ObjectMeta)
-
 	if err != nil {
 		return errors.Wrapf(err, "Metal3Machine's owner Machine could not be retrieved")
 	}
@@ -227,20 +224,19 @@ func (m *DataManager) createSecrets(ctx context.Context) error {
 	m.Log.V(VerbosityLevelDebug).Info("Fetched Machine")
 
 	// Fetch the BMH associated with the M3M
-	bmh, err := getHost(ctx, m3m, m.client, m.Log)
+	dg, err := getDataHost(ctx, m3m, m.client, m.Log)
 	if err != nil {
 		return err
 	}
-	if bmh == nil {
-		errMessage := "Waiting for BareMetalHost to become available"
+	if dg == nil {
+		errMessage := "Waiting for Host to become available"
 		m.Log.Info(errMessage)
 		return WithTransientError(errors.New(errMessage), requeueAfter)
 	}
-	m.Log.V(VerbosityLevelDebug).Info("Fetched BMH")
-
+	m.Log.V(VerbosityLevelDebug).Info("Fetched Host")
 	// Fetch all the Metal3IPPools and create Metal3IPClaims as needed. Check if the
 	// IP address has been allocated, if so, fetch the address, gateway and prefix.
-	poolAddresses, err := m.getAddressesFromPool(ctx, *m3dt, m3m, capiMachine, bmh)
+	poolAddresses, err := m.getAddressesFromPool(ctx, *m3dt, m3m, capiMachine, dg)
 	if err != nil {
 		return err
 	}
@@ -259,7 +255,7 @@ func (m *DataManager) createSecrets(ctx context.Context) error {
 	// The MetaData secret must be created
 	if apierrors.IsNotFound(metaDataErr) {
 		m.Log.Info("Creating Metadata secret")
-		metadata, err := renderMetaData(m.Data, m3dt, m3m, capiMachine, bmh, poolAddresses)
+		metadata, err := renderMetaData(m.Data, m3dt, m3m, capiMachine, dg, poolAddresses)
 		if err != nil {
 			return err
 		}
@@ -274,7 +270,7 @@ func (m *DataManager) createSecrets(ctx context.Context) error {
 	// The NetworkData secret must be created
 	if apierrors.IsNotFound(networkDataErr) {
 		m.Log.Info("Creating Networkdata secret")
-		networkData, err := renderNetworkData(m3dt, m3m, capiMachine, bmh, poolAddresses)
+		networkData, err := renderNetworkData(m3dt, m3m, capiMachine, dg, poolAddresses)
 		if err != nil {
 			return err
 		}
@@ -336,12 +332,12 @@ func (m *DataManager) getAddressesFromPool(ctx context.Context,
 	m3dt infrav1.Metal3DataTemplate,
 	m3m *infrav1.Metal3Machine,
 	machine *clusterv1.Machine,
-	bmh *bmov1alpha1.BareMetalHost,
+	dg DataGetter,
 ) (map[string]addressFromPool, error) {
 	var err error
 	addresses := map[string]addressFromPool{}
 
-	poolRefs, err := getReferencedPools(m3dt, m3m, machine, bmh)
+	poolRefs, err := getReferencedPools(m3dt, m3m, machine, dg)
 	if err != nil {
 		return addresses, err
 	}
@@ -471,17 +467,17 @@ func (p poolRefs) addFromAnnotation(
 	fromPoolAnnotation *infrav1.FromPoolAnnotation,
 	m3m *infrav1.Metal3Machine,
 	machine *clusterv1.Machine,
-	bmh *bmov1alpha1.BareMetalHost,
+	dg DataGetter,
 ) error {
 	if fromPoolAnnotation == nil {
 		return nil
 	}
 
-	if m3m == nil && machine == nil && bmh == nil {
+	if m3m == nil && machine == nil && dg == nil {
 		return nil
 	}
 
-	annotationValue, err := getValueFromAnnotation(fromPoolAnnotation.Object, fromPoolAnnotation.Annotation, m3m, machine, bmh)
+	annotationValue, err := getValueFromAnnotation(fromPoolAnnotation.Object, fromPoolAnnotation.Annotation, m3m, machine, dg)
 	if err != nil {
 		return err
 	}
@@ -504,7 +500,7 @@ func (p poolRefs) addFromAnnotation(
 func getReferencedPools(m3dt infrav1.Metal3DataTemplate,
 	m3m *infrav1.Metal3Machine,
 	machine *clusterv1.Machine,
-	bmh *bmov1alpha1.BareMetalHost,
+	dg DataGetter,
 ) (map[string]corev1.TypedLocalObjectReference, error) {
 	pools := poolRefs{}
 	if m3dt.Spec.MetaData != nil {
@@ -531,7 +527,7 @@ func getReferencedPools(m3dt infrav1.Metal3DataTemplate,
 	}
 	if m3dt.Spec.NetworkData != nil {
 		for _, network := range m3dt.Spec.NetworkData.Networks.IPv4 { //nolint:dupl
-			if err := pools.addFromAnnotation(network.FromPoolAnnotation, m3m, machine, bmh); err != nil {
+			if err := pools.addFromAnnotation(network.FromPoolAnnotation, m3m, machine, dg); err != nil {
 				return pools, err
 			} else if network.FromPoolRef != nil && network.FromPoolRef.Name != "" {
 				if err := pools.addRef(*network.FromPoolRef); err != nil {
@@ -544,7 +540,7 @@ func getReferencedPools(m3dt infrav1.Metal3DataTemplate,
 			}
 
 			for _, route := range network.Routes {
-				if err := pools.addFromAnnotation(route.Gateway.FromPoolAnnotation, m3m, machine, bmh); err != nil {
+				if err := pools.addFromAnnotation(route.Gateway.FromPoolAnnotation, m3m, machine, dg); err != nil {
 					return pools, err
 				} else if route.Gateway.FromPoolRef != nil && route.Gateway.FromPoolRef.Name != "" {
 					if err := pools.addRef(*route.Gateway.FromPoolRef); err != nil {
@@ -564,7 +560,7 @@ func getReferencedPools(m3dt infrav1.Metal3DataTemplate,
 		}
 
 		for _, network := range m3dt.Spec.NetworkData.Networks.IPv6 { //nolint:dupl
-			if err := pools.addFromAnnotation(network.FromPoolAnnotation, m3m, machine, bmh); err != nil {
+			if err := pools.addFromAnnotation(network.FromPoolAnnotation, m3m, machine, dg); err != nil {
 				return pools, err
 			} else if network.FromPoolRef != nil && network.FromPoolRef.Name != "" {
 				if err := pools.addRef(*network.FromPoolRef); err != nil {
@@ -576,7 +572,7 @@ func getReferencedPools(m3dt infrav1.Metal3DataTemplate,
 				}
 			}
 			for _, route := range network.Routes {
-				if err := pools.addFromAnnotation(route.Gateway.FromPoolAnnotation, m3m, machine, bmh); err != nil {
+				if err := pools.addFromAnnotation(route.Gateway.FromPoolAnnotation, m3m, machine, dg); err != nil {
 					return pools, err
 				} else if route.Gateway.FromPoolRef != nil && route.Gateway.FromPoolRef.Name != "" {
 					if err := pools.addRef(*route.Gateway.FromPoolRef); err != nil {
@@ -723,16 +719,17 @@ func (m *DataManager) ensureM3IPClaim(ctx context.Context, poolRef corev1.TypedL
 	m.Log.V(VerbosityLevelDebug).Info("Fetched Metal3Machine", "Metal3Machine", m3m.Name)
 
 	// Fetch the BMH associated with the M3M
-	bmh, err := getHost(ctx, m3m, m.client, m.Log)
+	dataHost, err := getDataHost(ctx, m3m, m.client, m.Log)
 	if err != nil {
 		return reconciledClaim{m3Claim: ipClaim}, err
 	}
-	if bmh == nil {
+	if dataHost == nil {
 		return reconciledClaim{m3Claim: ipClaim}, WithTransientError(errors.New("no associated BMH yet"), requeueAfter)
 	}
-	m.Log.V(VerbosityLevelDebug).Info("Fetched BMH", "BMH", bmh.Name)
+	dataHostName := dataHost.GetName()
+	m.Log.V(VerbosityLevelDebug).Info("Fetched BMH/Host", "BMH/Host", dataHostName)
 
-	ipClaim, err = fetchM3IPClaim(ctx, m.client, m.Log, bmh.Name+"-"+poolRef.Name, m.Data.Namespace)
+	ipClaim, err = fetchM3IPClaim(ctx, m.client, m.Log, dataHostName+"-"+poolRef.Name, m.Data.Namespace)
 	if err == nil {
 		return reconciledClaim{m3Claim: ipClaim}, nil
 	}
@@ -744,7 +741,7 @@ func (m *DataManager) ensureM3IPClaim(ctx context.Context, poolRef corev1.TypedL
 	var ObjMeta *metav1.ObjectMeta
 	if EnableBMHNameBasedPreallocation {
 		// if EnableBMHNameBasedPreallocation enabled, name of the m3IPClaim is based on the BMH name
-		ObjMeta = m.m3IPClaimObjectMeta(bmh.Name, poolRef.Name, true)
+		ObjMeta = m.m3IPClaimObjectMeta(dataHostName, poolRef.Name, true)
 	} else {
 		// otherwise, name of the m3IPClaim is based on the m3Data name
 		ObjMeta = m.m3IPClaimObjectMeta(m.Data.Name, poolRef.Name, false)
@@ -1003,7 +1000,7 @@ func (m *DataManager) releaseAddressFromPool(ctx context.Context, poolRef corev1
 // renderNetworkData renders the networkData into an object that will be
 // marshalled into the secret.
 func renderNetworkData(m3dt *infrav1.Metal3DataTemplate,
-	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, bmh *bmov1alpha1.BareMetalHost,
+	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, dg DataGetter,
 	poolAddresses map[string]addressFromPool,
 ) ([]byte, error) {
 	if m3dt.Spec.NetworkData == nil {
@@ -1013,12 +1010,12 @@ func renderNetworkData(m3dt *infrav1.Metal3DataTemplate,
 
 	networkData := map[string][]any{}
 
-	networkData["links"], err = renderNetworkLinks(m3dt.Spec.NetworkData.Links, m3m, machine, bmh)
+	networkData["links"], err = renderNetworkLinks(m3dt.Spec.NetworkData.Links, m3m, machine, dg)
 	if err != nil {
 		return nil, err
 	}
 
-	networkData["networks"], err = renderNetworkNetworks(m3dt.Spec.NetworkData.Networks, poolAddresses, m3m, machine, bmh)
+	networkData["networks"], err = renderNetworkNetworks(m3dt.Spec.NetworkData.Networks, poolAddresses, m3m, machine, dg)
 	if err != nil {
 		return nil, err
 	}
@@ -1060,12 +1057,12 @@ func renderNetworkServices(services infrav1.NetworkDataService, poolAddresses ma
 
 // renderNetworkLinks renders the different types of links.
 func renderNetworkLinks(networkLinks infrav1.NetworkDataLink,
-	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, bmh *bmov1alpha1.BareMetalHost) ([]any, error) {
+	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, dg DataGetter) ([]any, error) {
 	data := []any{}
 
 	// Bond links
 	for _, link := range networkLinks.Bonds {
-		macAddress, err := getLinkMacAddress(link.MACAddress, m3m, machine, bmh)
+		macAddress, err := getLinkMacAddress(link.MACAddress, m3m, machine, dg)
 		if err != nil {
 			return nil, err
 		}
@@ -1100,7 +1097,7 @@ func renderNetworkLinks(networkLinks infrav1.NetworkDataLink,
 
 	// Ethernet links
 	for _, link := range networkLinks.Ethernets {
-		macAddress, err := getLinkMacAddress(link.MACAddress, m3m, machine, bmh)
+		macAddress, err := getLinkMacAddress(link.MACAddress, m3m, machine, dg)
 		if err != nil {
 			return nil, err
 		}
@@ -1114,7 +1111,7 @@ func renderNetworkLinks(networkLinks infrav1.NetworkDataLink,
 
 	// Vlan links
 	for _, link := range networkLinks.Vlans {
-		macAddress, err := getLinkMacAddress(link.MACAddress, m3m, machine, bmh)
+		macAddress, err := getLinkMacAddress(link.MACAddress, m3m, machine, dg)
 		if err != nil {
 			return nil, err
 		}
@@ -1134,7 +1131,7 @@ func renderNetworkLinks(networkLinks infrav1.NetworkDataLink,
 // renderNetworkNetworks renders the different types of network.
 func renderNetworkNetworks(networks infrav1.NetworkDataNetwork,
 	poolAddresses map[string]addressFromPool,
-	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, bmh *bmov1alpha1.BareMetalHost,
+	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, dg DataGetter,
 ) ([]any, error) {
 	data := []any{}
 
@@ -1144,7 +1141,7 @@ func renderNetworkNetworks(networks infrav1.NetworkDataNetwork,
 		var poolAddress addressFromPool
 		var ok bool
 		if network.FromPoolAnnotation != nil {
-			poolName, err := getValueFromAnnotation(network.FromPoolAnnotation.Object, network.FromPoolAnnotation.Annotation, m3m, machine, bmh)
+			poolName, err := getValueFromAnnotation(network.FromPoolAnnotation.Object, network.FromPoolAnnotation.Annotation, m3m, machine, dg)
 			if err != nil {
 				return nil, err
 			}
@@ -1159,7 +1156,7 @@ func renderNetworkNetworks(networks infrav1.NetworkDataNetwork,
 		}
 		ip := ipamv1.IPAddressv4Str(poolAddress.Address)
 		mask := translateMask(poolAddress.Prefix, true)
-		routes, err := getRoutesv4(network.Routes, poolAddresses, m3m, machine, bmh)
+		routes, err := getRoutesv4(network.Routes, poolAddresses, m3m, machine, dg)
 		if err != nil {
 			return nil, err
 		}
@@ -1179,7 +1176,7 @@ func renderNetworkNetworks(networks infrav1.NetworkDataNetwork,
 		var poolAddress addressFromPool
 		var ok bool
 		if network.FromPoolAnnotation != nil {
-			poolName, err := getValueFromAnnotation(network.FromPoolAnnotation.Object, network.FromPoolAnnotation.Annotation, m3m, machine, bmh)
+			poolName, err := getValueFromAnnotation(network.FromPoolAnnotation.Object, network.FromPoolAnnotation.Annotation, m3m, machine, dg)
 			if err != nil {
 				return nil, err
 			}
@@ -1194,7 +1191,7 @@ func renderNetworkNetworks(networks infrav1.NetworkDataNetwork,
 		}
 		ip := ipamv1.IPAddressv6Str(poolAddress.Address)
 		mask := translateMask(poolAddress.Prefix, false)
-		routes, err := getRoutesv6(network.Routes, poolAddresses, m3m, machine, bmh)
+		routes, err := getRoutesv6(network.Routes, poolAddresses, m3m, machine, dg)
 		if err != nil {
 			return nil, err
 		}
@@ -1210,7 +1207,7 @@ func renderNetworkNetworks(networks infrav1.NetworkDataNetwork,
 
 	// IPv4 networks DHCP allocation
 	for _, network := range networks.IPv4DHCP {
-		routes, err := getRoutesv4(network.Routes, poolAddresses, m3m, machine, bmh)
+		routes, err := getRoutesv4(network.Routes, poolAddresses, m3m, machine, dg)
 		if err != nil {
 			return nil, err
 		}
@@ -1224,7 +1221,7 @@ func renderNetworkNetworks(networks infrav1.NetworkDataNetwork,
 
 	// IPv6 networks DHCP allocation
 	for _, network := range networks.IPv6DHCP {
-		routes, err := getRoutesv6(network.Routes, poolAddresses, m3m, machine, bmh)
+		routes, err := getRoutesv6(network.Routes, poolAddresses, m3m, machine, dg)
 		if err != nil {
 			return nil, err
 		}
@@ -1238,7 +1235,7 @@ func renderNetworkNetworks(networks infrav1.NetworkDataNetwork,
 
 	// IPv6 networks SLAAC allocation
 	for _, network := range networks.IPv6SLAAC {
-		routes, err := getRoutesv6(network.Routes, poolAddresses, m3m, machine, bmh)
+		routes, err := getRoutesv6(network.Routes, poolAddresses, m3m, machine, dg)
 		if err != nil {
 			return nil, err
 		}
@@ -1260,7 +1257,7 @@ func renderNetworkNetworks(networks infrav1.NetworkDataNetwork,
 //nolint:dupl
 func getRoutesv4(netRoutes []infrav1.NetworkDataRoutev4,
 	poolAddresses map[string]addressFromPool,
-	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, bmh *bmov1alpha1.BareMetalHost,
+	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, dg DataGetter,
 ) ([]any, error) {
 	routes := []any{}
 	for _, route := range netRoutes {
@@ -1268,7 +1265,7 @@ func getRoutesv4(netRoutes []infrav1.NetworkDataRoutev4,
 		if route.Gateway.String != nil {
 			gateway = *route.Gateway.String
 		} else if route.Gateway.FromPoolAnnotation != nil {
-			poolName, err := getValueFromAnnotation(route.Gateway.FromPoolAnnotation.Object, route.Gateway.FromPoolAnnotation.Annotation, m3m, machine, bmh)
+			poolName, err := getValueFromAnnotation(route.Gateway.FromPoolAnnotation.Object, route.Gateway.FromPoolAnnotation.Annotation, m3m, machine, dg)
 			if err != nil {
 				return []any{}, err
 			}
@@ -1325,7 +1322,7 @@ func getRoutesv4(netRoutes []infrav1.NetworkDataRoutev4,
 //nolint:dupl
 func getRoutesv6(netRoutes []infrav1.NetworkDataRoutev6,
 	poolAddresses map[string]addressFromPool,
-	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, bmh *bmov1alpha1.BareMetalHost,
+	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, dg DataGetter,
 ) ([]any, error) {
 	routes := []any{}
 	for _, route := range netRoutes {
@@ -1333,7 +1330,7 @@ func getRoutesv6(netRoutes []infrav1.NetworkDataRoutev6,
 		if route.Gateway.String != nil {
 			gateway = *route.Gateway.String
 		} else if route.Gateway.FromPoolAnnotation != nil {
-			poolName, err := getValueFromAnnotation(route.Gateway.FromPoolAnnotation.Object, route.Gateway.FromPoolAnnotation.Annotation, m3m, machine, bmh)
+			poolName, err := getValueFromAnnotation(route.Gateway.FromPoolAnnotation.Object, route.Gateway.FromPoolAnnotation.Annotation, m3m, machine, dg)
 			if err != nil {
 				return []any{}, err
 			}
@@ -1403,7 +1400,7 @@ func translateMask(maskInt int, ipv4 bool) any {
 
 // getLinkMacAddress returns the mac address.
 func getLinkMacAddress(mac *infrav1.NetworkLinkEthernetMac,
-	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, bmh *bmov1alpha1.BareMetalHost) (
+	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, dg DataGetter) (
 	string, error,
 ) {
 	var macaddress, err = "", errors.New("no MAC address given")
@@ -1413,11 +1410,11 @@ func getLinkMacAddress(mac *infrav1.NetworkLinkEthernetMac,
 		macaddress, err = *mac.String, nil
 	} else if mac.FromHostInterface != nil {
 		// if a host interface is given
-		macaddress, err = getBMHMacByName(*mac.FromHostInterface, bmh)
+		macaddress, err = getMacByName(*mac.FromHostInterface, dg)
 	} else if mac.FromAnnotation != nil {
 		// if an annotation reference is given
 		macaddress, err = getValueFromAnnotation(mac.FromAnnotation.Object,
-			mac.FromAnnotation.Annotation, m3m, machine, bmh)
+			mac.FromAnnotation.Annotation, m3m, machine, dg)
 	}
 
 	if err != nil {
@@ -1437,7 +1434,7 @@ func getLinkMacAddress(mac *infrav1.NetworkLinkEthernetMac,
 
 // renderMetaData renders the MetaData items.
 func renderMetaData(m3d *infrav1.Metal3Data, m3dt *infrav1.Metal3DataTemplate,
-	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, bmh *bmov1alpha1.BareMetalHost,
+	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, dg DataGetter,
 	poolAddresses map[string]addressFromPool,
 ) ([]byte, error) {
 	if m3dt.Spec.MetaData == nil {
@@ -1447,7 +1444,7 @@ func renderMetaData(m3d *infrav1.Metal3Data, m3dt *infrav1.Metal3DataTemplate,
 
 	// Mac addresses
 	for _, entry := range m3dt.Spec.MetaData.FromHostInterfaces {
-		value, err := getBMHMacByName(entry.Interface, bmh)
+		value, err := getMacByName(entry.Interface, dg)
 		if err != nil {
 			return nil, err
 		}
@@ -1501,8 +1498,10 @@ func renderMetaData(m3d *infrav1.Metal3Data, m3dt *infrav1.Metal3DataTemplate,
 			metadata[entry.Key] = m3m.Name
 		case capimachine:
 			metadata[entry.Key] = machine.Name
+		case hostclaim:
+			metadata[entry.Key] = dg.GetHostName()
 		case host:
-			metadata[entry.Key] = bmh.Name
+			metadata[entry.Key] = dg.GetName()
 		default:
 			return nil, errors.New("Unknown object type")
 		}
@@ -1516,7 +1515,11 @@ func renderMetaData(m3d *infrav1.Metal3Data, m3dt *infrav1.Metal3DataTemplate,
 		case capimachine:
 			metadata[entry.Key] = machine.Labels[entry.Label]
 		case host:
-			metadata[entry.Key] = bmh.Labels[entry.Label]
+			var err error
+			metadata[entry.Key], err = dg.GetLabel(entry.Label)
+			if err != nil {
+				return nil, err
+			}
 		default:
 			return nil, errors.New("Unknown object type")
 		}
@@ -1525,7 +1528,7 @@ func renderMetaData(m3d *infrav1.Metal3Data, m3dt *infrav1.Metal3DataTemplate,
 	// Annotations
 	for _, entry := range m3dt.Spec.MetaData.FromAnnotations {
 		value, err := getValueFromAnnotation(entry.Object,
-			entry.Annotation, m3m, machine, bmh)
+			entry.Annotation, m3m, machine, dg)
 		if err != nil {
 			return nil, err
 		}
@@ -1536,19 +1539,23 @@ func renderMetaData(m3d *infrav1.Metal3Data, m3dt *infrav1.Metal3DataTemplate,
 	for _, entry := range m3dt.Spec.MetaData.Strings {
 		metadata[entry.Key] = entry.Value
 	}
-	providerid := fmt.Sprintf("%s/%s/%s", m3m.GetNamespace(), bmh.GetName(), m3m.GetName())
+	providerid := fmt.Sprintf("%s/%s/%s", m3m.GetNamespace(), dg.GetName(), m3m.GetName())
 	metadata["providerid"] = providerid
 	return yaml.Marshal(metadata)
 }
 
-// getBMHMacByName returns the mac address of the interface matching the name.
-func getBMHMacByName(name string, bmh *bmov1alpha1.BareMetalHost) (string, error) {
-	if bmh == nil || bmh.Status.HardwareDetails == nil || bmh.Status.HardwareDetails.NIC == nil {
-		return "", errors.New("NICs list not populated")
+// getMacByName returns the mac address of the interface matching the name.
+func getMacByName(name string, dg DataGetter) (string, error) {
+	if dg == nil {
+		return "", errors.New("Nics list not populated")
 	}
-	for _, nics := range bmh.Status.HardwareDetails.NIC {
-		if nics.Name == name {
-			return nics.MAC, nil
+	nics := dg.GetNICs()
+	if nics == nil {
+		return "", errors.New("Nics list not populated")
+	}
+	for nicName, mac := range nics {
+		if nicName == name {
+			return mac, nil
 		}
 	}
 	return "", fmt.Errorf("NIC name not found %v", name)
@@ -1556,7 +1563,7 @@ func getBMHMacByName(name string, bmh *bmov1alpha1.BareMetalHost) (string, error
 
 // getValueFromAnnotation returns an annotation from an object representing a machine.
 func getValueFromAnnotation(object string, annotation string,
-	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, bmh *bmov1alpha1.BareMetalHost) (string, error) {
+	m3m *infrav1.Metal3Machine, machine *clusterv1.Machine, dg DataGetter) (string, error) {
 	switch strings.ToLower(object) {
 	case m3machine:
 		if m3m == nil {
@@ -1569,10 +1576,7 @@ func getValueFromAnnotation(object string, annotation string,
 		}
 		return machine.Annotations[annotation], nil
 	case host:
-		if bmh == nil {
-			return "", fmt.Errorf("%s is nil but referenced in annotation %s", object, annotation)
-		}
-		return bmh.Annotations[annotation], nil
+		return dg.GetAnnotation(annotation)
 	default:
 		return "", errors.New("Unknown object type")
 	}

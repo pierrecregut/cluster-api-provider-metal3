@@ -190,7 +190,7 @@ var _ = Describe("Metal3Data manager", func() {
 			}
 			fakeClient := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(objects...).Build()
 			dataMgr, err := NewDataManager(fakeClient, tc.m3d,
-				logr.Discard(),
+				GinkgoLogr,
 			)
 			Expect(err).NotTo(HaveOccurred())
 			err = dataMgr.createSecrets(context.TODO())
@@ -678,7 +678,11 @@ var _ = Describe("Metal3Data manager", func() {
 				logr.Discard(),
 			)
 			Expect(err).NotTo(HaveOccurred())
-			poolAddresses, err := dataMgr.getAddressesFromPool(context.TODO(), m3dt, tc.m3m, tc.machine, tc.bmh)
+			var dg DataGetter = &BMHDataGetter{bmh: tc.bmh}
+			if tc.bmh == nil {
+				dg = nil
+			}
+			poolAddresses, err := dataMgr.getAddressesFromPool(context.TODO(), m3dt, tc.m3m, tc.machine, dg)
 			if tc.expectError || tc.expectRequeue {
 				Expect(err).To(HaveOccurred())
 				if tc.expectRequeue {
@@ -2545,7 +2549,7 @@ var _ = Describe("Metal3Data manager", func() {
 		m3dt           *infrav1.Metal3DataTemplate
 		m3m            *infrav1.Metal3Machine
 		machine        *clusterv1.Machine
-		bmh            *bmov1alpha1.BareMetalHost
+		dg             DataGetter
 		poolAddresses  map[string]addressFromPool
 		expectError    bool
 		expectedOutput map[string][]any
@@ -2553,7 +2557,7 @@ var _ = Describe("Metal3Data manager", func() {
 
 	DescribeTable("Test renderNetworkData",
 		func(tc testCaseRenderNetworkData) {
-			result, err := renderNetworkData(tc.m3dt, tc.m3m, tc.machine, tc.bmh, tc.poolAddresses)
+			result, err := renderNetworkData(tc.m3dt, tc.m3m, tc.machine, tc.dg, tc.poolAddresses)
 			if tc.expectError {
 				Expect(err).To(HaveOccurred())
 				return
@@ -2780,14 +2784,14 @@ var _ = Describe("Metal3Data manager", func() {
 		links          infrav1.NetworkDataLink
 		m3m            *infrav1.Metal3Machine
 		machine        *clusterv1.Machine
-		bmh            *bmov1alpha1.BareMetalHost
+		dg             DataGetter
 		expectError    bool
 		expectedOutput []any
 	}
 
 	DescribeTable("Test renderNetworkLinks",
 		func(tc testCaseRenderNetworkLinks) {
-			result, err := renderNetworkLinks(tc.links, tc.m3m, tc.machine, tc.bmh)
+			result, err := renderNetworkLinks(tc.links, tc.m3m, tc.machine, tc.dg)
 			if tc.expectError {
 				Expect(err).To(HaveOccurred())
 				return
@@ -2830,9 +2834,11 @@ var _ = Describe("Metal3Data manager", func() {
 					},
 				},
 			},
-			bmh: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: testObjectMeta(baremetalhostName, namespaceName, ""),
-				Status:     bmov1alpha1.BareMetalHostStatus{},
+			dg: &BMHDataGetter{
+				bmh: &bmov1alpha1.BareMetalHost{
+					ObjectMeta: testObjectMeta(baremetalhostName, namespaceName, ""),
+					Status:     bmov1alpha1.BareMetalHostStatus{},
+				},
 			},
 			expectError: true,
 		}),
@@ -2877,9 +2883,11 @@ var _ = Describe("Metal3Data manager", func() {
 					},
 				},
 			},
-			bmh: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: testObjectMeta(baremetalhostName, namespaceName, ""),
-				Status:     bmov1alpha1.BareMetalHostStatus{},
+			dg: &BMHDataGetter{
+				bmh: &bmov1alpha1.BareMetalHost{
+					ObjectMeta: testObjectMeta(baremetalhostName, namespaceName, ""),
+					Status:     bmov1alpha1.BareMetalHostStatus{},
+				},
 			},
 			expectError: true,
 		}),
@@ -2922,9 +2930,11 @@ var _ = Describe("Metal3Data manager", func() {
 					},
 				},
 			},
-			bmh: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: testObjectMeta(baremetalhostName, namespaceName, ""),
-				Status:     bmov1alpha1.BareMetalHostStatus{},
+			dg: &BMHDataGetter{
+				bmh: &bmov1alpha1.BareMetalHost{
+					ObjectMeta: testObjectMeta(baremetalhostName, namespaceName, ""),
+					Status:     bmov1alpha1.BareMetalHostStatus{},
+				},
 			},
 			expectError: true,
 		}),
@@ -2943,7 +2953,8 @@ var _ = Describe("Metal3Data manager", func() {
 
 	DescribeTable("Test renderNetworkNetworks",
 		func(tc testCaseRenderNetworkNetworks) {
-			result, err := renderNetworkNetworks(tc.networks, tc.poolAddresses, tc.m3m, tc.machine, tc.bmh)
+			var dg DataGetter = &BMHDataGetter{bmh: tc.bmh}
+			result, err := renderNetworkNetworks(tc.networks, tc.poolAddresses, tc.m3m, tc.machine, dg)
 			if tc.expectError {
 				Expect(err).To(HaveOccurred())
 				return
@@ -3589,14 +3600,14 @@ var _ = Describe("Metal3Data manager", func() {
 		mac         *infrav1.NetworkLinkEthernetMac
 		m3m         *infrav1.Metal3Machine
 		machine     *clusterv1.Machine
-		bmh         *bmov1alpha1.BareMetalHost
+		dg          DataGetter
 		expectError bool
 		expectedMAC string
 	}
 
 	DescribeTable("Test getLinkMacAddress",
 		func(tc testCaseGetLinkMacAddress) {
-			result, err := getLinkMacAddress(tc.mac, tc.m3m, tc.machine, tc.bmh)
+			result, err := getLinkMacAddress(tc.mac, tc.m3m, tc.machine, tc.dg)
 			if tc.expectError {
 				Expect(err).To(HaveOccurred())
 				return
@@ -3614,20 +3625,22 @@ var _ = Describe("Metal3Data manager", func() {
 			mac: &infrav1.NetworkLinkEthernetMac{
 				FromHostInterface: ptr.To("eth1"),
 			},
-			bmh: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: testObjectMeta(baremetalhostName, namespaceName, ""),
-				Status: bmov1alpha1.BareMetalHostStatus{
-					HardwareDetails: &bmov1alpha1.HardwareDetails{
-						NIC: []bmov1alpha1.NIC{
-							{
-								Name: "eth0",
-								MAC:  "12:34:56:78:9A:BC",
-							},
-							// Check if empty value cause failure
-							{},
-							{
-								Name: "eth1",
-								MAC:  "DE:F0:12:34:56:78",
+			dg: &BMHDataGetter{
+				bmh: &bmov1alpha1.BareMetalHost{
+					ObjectMeta: testObjectMeta(baremetalhostName, namespaceName, ""),
+					Status: bmov1alpha1.BareMetalHostStatus{
+						HardwareDetails: &bmov1alpha1.HardwareDetails{
+							NIC: []bmov1alpha1.NIC{
+								{
+									Name: "eth0",
+									MAC:  "12:34:56:78:9A:BC",
+								},
+								// Check if empty value cause failure
+								{},
+								{
+									Name: "eth1",
+									MAC:  "DE:F0:12:34:56:78",
+								},
 							},
 						},
 					},
@@ -3639,20 +3652,22 @@ var _ = Describe("Metal3Data manager", func() {
 			mac: &infrav1.NetworkLinkEthernetMac{
 				FromHostInterface: ptr.To("eth2"),
 			},
-			bmh: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: testObjectMeta(baremetalhostName, namespaceName, ""),
-				Status: bmov1alpha1.BareMetalHostStatus{
-					HardwareDetails: &bmov1alpha1.HardwareDetails{
-						NIC: []bmov1alpha1.NIC{
-							{
-								Name: "eth0",
-								MAC:  "12:34:56:78:9A:BC",
-							},
-							// Check if empty value cause failure
-							{},
-							{
-								Name: "eth1",
-								MAC:  "DE:F0:12:34:56:78",
+			dg: &BMHDataGetter{
+				bmh: &bmov1alpha1.BareMetalHost{
+					ObjectMeta: testObjectMeta(baremetalhostName, namespaceName, ""),
+					Status: bmov1alpha1.BareMetalHostStatus{
+						HardwareDetails: &bmov1alpha1.HardwareDetails{
+							NIC: []bmov1alpha1.NIC{
+								{
+									Name: "eth0",
+									MAC:  "12:34:56:78:9A:BC",
+								},
+								// Check if empty value cause failure
+								{},
+								{
+									Name: "eth1",
+									MAC:  "DE:F0:12:34:56:78",
+								},
 							},
 						},
 					},
@@ -3703,13 +3718,15 @@ var _ = Describe("Metal3Data manager", func() {
 					Annotation: "mac-address",
 				},
 			},
-			bmh: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      baremetalhostName,
-					Namespace: namespaceName,
-					UID:       "",
-					Annotations: map[string]string{
-						"mac-address": "12:34:56:78:9A:BD",
+			dg: &BMHDataGetter{
+				bmh: &bmov1alpha1.BareMetalHost{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      baremetalhostName,
+						Namespace: namespaceName,
+						UID:       "",
+						Annotations: map[string]string{
+							"mac-address": "12:34:56:78:9A:BD",
+						},
 					},
 				},
 			},
@@ -3765,7 +3782,7 @@ var _ = Describe("Metal3Data manager", func() {
 		m3dt             *infrav1.Metal3DataTemplate
 		m3m              *infrav1.Metal3Machine
 		machine          *clusterv1.Machine
-		bmh              *bmov1alpha1.BareMetalHost
+		dg               DataGetter
 		poolAddresses    map[string]addressFromPool
 		expectedMetaData map[string]string
 		expectError      bool
@@ -3774,7 +3791,7 @@ var _ = Describe("Metal3Data manager", func() {
 	DescribeTable("Test renderMetaData",
 		func(tc testCaseRenderMetaData) {
 			resultBytes, err := renderMetaData(tc.m3d, tc.m3dt, tc.m3m, tc.machine,
-				tc.bmh, tc.poolAddresses,
+				tc.dg, tc.poolAddresses,
 			)
 			if tc.expectError {
 				Expect(err).To(HaveOccurred())
@@ -3974,30 +3991,32 @@ var _ = Describe("Metal3Data manager", func() {
 					},
 				},
 			},
-			bmh: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      baremetalhostName,
-					Namespace: namespaceName,
-					Labels: map[string]string{
-						"BMH": "BMHLabel",
+			dg: &BMHDataGetter{
+				bmh: &bmov1alpha1.BareMetalHost{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      baremetalhostName,
+						Namespace: namespaceName,
+						Labels: map[string]string{
+							"BMH": "BMHLabel",
+						},
+						Annotations: map[string]string{
+							"BMH": "BMHAnnotation",
+						},
+						UID: bmhuid,
 					},
-					Annotations: map[string]string{
-						"BMH": "BMHAnnotation",
-					},
-					UID: bmhuid,
-				},
-				Status: bmov1alpha1.BareMetalHostStatus{
-					HardwareDetails: &bmov1alpha1.HardwareDetails{
-						NIC: []bmov1alpha1.NIC{
-							{
-								Name: "eth0",
-								MAC:  "XX:XX:XX:XX:XX:XX",
-							},
-							// To check if empty value cause failure
-							{},
-							{
-								Name: "eth1",
-								MAC:  "XX:XX:XX:XX:XX:YY",
+					Status: bmov1alpha1.BareMetalHostStatus{
+						HardwareDetails: &bmov1alpha1.HardwareDetails{
+							NIC: []bmov1alpha1.NIC{
+								{
+									Name: "eth0",
+									MAC:  "XX:XX:XX:XX:XX:XX",
+								},
+								// To check if empty value cause failure
+								{},
+								{
+									Name: "eth1",
+									MAC:  "XX:XX:XX:XX:XX:YY",
+								},
 							},
 						},
 					},
@@ -4060,20 +4079,22 @@ var _ = Describe("Metal3Data manager", func() {
 					},
 				},
 			},
-			bmh: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: testObjectMeta(baremetalhostName, namespaceName, ""),
-				Status: bmov1alpha1.BareMetalHostStatus{
-					HardwareDetails: &bmov1alpha1.HardwareDetails{
-						NIC: []bmov1alpha1.NIC{
-							{
-								Name: "eth0",
-								MAC:  "XX:XX:XX:XX:XX:XX",
-							},
-							// Check if empty value cause failure
-							{},
-							{
-								Name: "eth1",
-								MAC:  "XX:XX:XX:XX:XX:YY",
+			dg: &BMHDataGetter{
+				bmh: &bmov1alpha1.BareMetalHost{
+					ObjectMeta: testObjectMeta(baremetalhostName, namespaceName, ""),
+					Status: bmov1alpha1.BareMetalHostStatus{
+						HardwareDetails: &bmov1alpha1.HardwareDetails{
+							NIC: []bmov1alpha1.NIC{
+								{
+									Name: "eth0",
+									MAC:  "XX:XX:XX:XX:XX:XX",
+								},
+								// Check if empty value cause failure
+								{},
+								{
+									Name: "eth1",
+									MAC:  "XX:XX:XX:XX:XX:YY",
+								},
 							},
 						},
 					},
@@ -4200,7 +4221,7 @@ var _ = Describe("Metal3Data manager", func() {
 	)
 
 	type testCaseGetBMHMacByName struct {
-		bmh         *bmov1alpha1.BareMetalHost
+		dg          DataGetter
 		name        string
 		expectError bool
 		expectedMAC string
@@ -4208,7 +4229,7 @@ var _ = Describe("Metal3Data manager", func() {
 
 	DescribeTable("Test getBMHMacByName",
 		func(tc testCaseGetBMHMacByName) {
-			result, err := getBMHMacByName(tc.name, tc.bmh)
+			result, err := getMacByName(tc.name, tc.dg)
 			if tc.expectError {
 				Expect(err).To(HaveOccurred())
 			} else {
@@ -4217,26 +4238,32 @@ var _ = Describe("Metal3Data manager", func() {
 			}
 		},
 		Entry("No hardware details", testCaseGetBMHMacByName{
-			bmh: &bmov1alpha1.BareMetalHost{
-				Status: bmov1alpha1.BareMetalHostStatus{},
+			dg: &BMHDataGetter{
+				bmh: &bmov1alpha1.BareMetalHost{
+					Status: bmov1alpha1.BareMetalHostStatus{},
+				},
 			},
 			name:        "eth1",
 			expectError: true,
 		}),
 		Entry("No Nics detail", testCaseGetBMHMacByName{
-			bmh: &bmov1alpha1.BareMetalHost{
-				Status: bmov1alpha1.BareMetalHostStatus{
-					HardwareDetails: &bmov1alpha1.HardwareDetails{},
+			dg: &BMHDataGetter{
+				bmh: &bmov1alpha1.BareMetalHost{
+					Status: bmov1alpha1.BareMetalHostStatus{
+						HardwareDetails: &bmov1alpha1.HardwareDetails{},
+					},
 				},
 			},
 			name:        "eth1",
 			expectError: true,
 		}),
 		Entry("Empty nic list", testCaseGetBMHMacByName{
-			bmh: &bmov1alpha1.BareMetalHost{
-				Status: bmov1alpha1.BareMetalHostStatus{
-					HardwareDetails: &bmov1alpha1.HardwareDetails{
-						NIC: []bmov1alpha1.NIC{},
+			dg: &BMHDataGetter{
+				bmh: &bmov1alpha1.BareMetalHost{
+					Status: bmov1alpha1.BareMetalHostStatus{
+						HardwareDetails: &bmov1alpha1.HardwareDetails{
+							NIC: []bmov1alpha1.NIC{},
+						},
 					},
 				},
 			},
@@ -4244,13 +4271,15 @@ var _ = Describe("Metal3Data manager", func() {
 			expectError: true,
 		}),
 		Entry("Nic not found", testCaseGetBMHMacByName{
-			bmh: &bmov1alpha1.BareMetalHost{
-				Status: bmov1alpha1.BareMetalHostStatus{
-					HardwareDetails: &bmov1alpha1.HardwareDetails{
-						NIC: []bmov1alpha1.NIC{
-							{
-								Name: "eth0",
-								MAC:  "XX:XX:XX:XX:XX:XX",
+			dg: &BMHDataGetter{
+				bmh: &bmov1alpha1.BareMetalHost{
+					Status: bmov1alpha1.BareMetalHostStatus{
+						HardwareDetails: &bmov1alpha1.HardwareDetails{
+							NIC: []bmov1alpha1.NIC{
+								{
+									Name: "eth0",
+									MAC:  "XX:XX:XX:XX:XX:XX",
+								},
 							},
 						},
 					},
@@ -4260,19 +4289,21 @@ var _ = Describe("Metal3Data manager", func() {
 			expectError: true,
 		}),
 		Entry("Nic found", testCaseGetBMHMacByName{
-			bmh: &bmov1alpha1.BareMetalHost{
-				Status: bmov1alpha1.BareMetalHostStatus{
-					HardwareDetails: &bmov1alpha1.HardwareDetails{
-						NIC: []bmov1alpha1.NIC{
-							{
-								Name: "eth0",
-								MAC:  "XX:XX:XX:XX:XX:XX",
-							},
-							// Check if empty value cause failure
-							{},
-							{
-								Name: "eth1",
-								MAC:  "XX:XX:XX:XX:XX:YY",
+			dg: &BMHDataGetter{
+				bmh: &bmov1alpha1.BareMetalHost{
+					Status: bmov1alpha1.BareMetalHostStatus{
+						HardwareDetails: &bmov1alpha1.HardwareDetails{
+							NIC: []bmov1alpha1.NIC{
+								{
+									Name: "eth0",
+									MAC:  "XX:XX:XX:XX:XX:XX",
+								},
+								// Check if empty value cause failure
+								{},
+								{
+									Name: "eth1",
+									MAC:  "XX:XX:XX:XX:XX:YY",
+								},
 							},
 						},
 					},
@@ -4282,18 +4313,20 @@ var _ = Describe("Metal3Data manager", func() {
 			expectedMAC: "XX:XX:XX:XX:XX:YY",
 		}),
 		Entry("Nic found, Empty Mac", testCaseGetBMHMacByName{
-			bmh: &bmov1alpha1.BareMetalHost{
-				Status: bmov1alpha1.BareMetalHostStatus{
-					HardwareDetails: &bmov1alpha1.HardwareDetails{
-						NIC: []bmov1alpha1.NIC{
-							{
-								Name: "eth0",
-								MAC:  "XX:XX:XX:XX:XX:XX",
-							},
-							// Check if empty value cause failure
-							{},
-							{
-								Name: "eth1",
+			dg: &BMHDataGetter{
+				bmh: &bmov1alpha1.BareMetalHost{
+					Status: bmov1alpha1.BareMetalHostStatus{
+						HardwareDetails: &bmov1alpha1.HardwareDetails{
+							NIC: []bmov1alpha1.NIC{
+								{
+									Name: "eth0",
+									MAC:  "XX:XX:XX:XX:XX:XX",
+								},
+								// Check if empty value cause failure
+								{},
+								{
+									Name: "eth1",
+								},
 							},
 						},
 					},
@@ -4611,8 +4644,8 @@ var _ = Describe("poolRefs map", func() {
 			m3m := &infrav1.Metal3Machine{}
 			machine := &clusterv1.Machine{}
 			bmh := &bmov1alpha1.BareMetalHost{}
-
-			Expect(refs.addFromAnnotation(nil, m3m, machine, bmh)).To(Succeed())
+			var dg DataGetter = &BMHDataGetter{bmh: bmh}
+			Expect(refs.addFromAnnotation(nil, m3m, machine, dg)).To(Succeed())
 			Expect(refs).To(BeEmpty())
 		})
 
@@ -4641,7 +4674,8 @@ var _ = Describe("poolRefs map", func() {
 				Annotation: "ippool-annotation",
 			}
 
-			Expect(refs.addFromAnnotation(annotation, nil, nil, bmh)).To(Succeed())
+			var dg DataGetter = &BMHDataGetter{bmh: bmh}
+			Expect(refs.addFromAnnotation(annotation, nil, nil, dg)).To(Succeed())
 			Expect(refs["test-pool"]).To(Equal(corev1.TypedLocalObjectReference{
 				Name:     "test-pool",
 				Kind:     "IPPool",
@@ -4663,7 +4697,8 @@ var _ = Describe("poolRefs map", func() {
 				Annotation: "missing-annotation",
 			}
 
-			err := refs.addFromAnnotation(annotation, nil, nil, bmh)
+			var dg DataGetter = &BMHDataGetter{bmh: bmh}
+			err := refs.addFromAnnotation(annotation, nil, nil, dg)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("annotation missing-annotation not found or empty"))
 		})
@@ -4682,7 +4717,8 @@ var _ = Describe("poolRefs map", func() {
 				Annotation: "empty-annotation",
 			}
 
-			err := refs.addFromAnnotation(annotation, nil, nil, bmh)
+			var dg DataGetter = &BMHDataGetter{bmh: bmh}
+			err := refs.addFromAnnotation(annotation, nil, nil, dg)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("annotation empty-annotation not found or empty"))
 		})
@@ -4701,8 +4737,9 @@ var _ = Describe("poolRefs map", func() {
 				Annotation: "ippool-annotation",
 			}
 
-			Expect(refs.addFromAnnotation(annotation, nil, nil, bmh)).To(Succeed())
-			Expect(refs.addFromAnnotation(annotation, nil, nil, bmh)).To(Succeed())
+			var dg DataGetter = &BMHDataGetter{bmh: bmh}
+			Expect(refs.addFromAnnotation(annotation, nil, nil, dg)).To(Succeed())
+			Expect(refs.addFromAnnotation(annotation, nil, nil, dg)).To(Succeed())
 			Expect(refs["duplicate-pool"]).To(Equal(corev1.TypedLocalObjectReference{
 				Name:     "duplicate-pool",
 				Kind:     "IPPool",
@@ -4730,7 +4767,8 @@ var _ = Describe("poolRefs map", func() {
 				Annotation: "ippool-annotation",
 			}
 
-			err := refs.addFromAnnotation(annotation, nil, nil, bmh)
+			var dg DataGetter = &BMHDataGetter{bmh: bmh}
+			err := refs.addFromAnnotation(annotation, nil, nil, dg)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("multiple references with the same name but different resource types"))
 		})
@@ -4749,7 +4787,8 @@ var _ = Describe("poolRefs map", func() {
 				Annotation: "test-annotation",
 			}
 
-			err := refs.addFromAnnotation(annotation, nil, nil, bmh)
+			var dg DataGetter = &BMHDataGetter{bmh: bmh}
+			err := refs.addFromAnnotation(annotation, nil, nil, dg)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("Unknown object type"))
 		})
@@ -4782,7 +4821,8 @@ var _ = Describe("poolRefs map", func() {
 				Object:     "metal3machine",
 				Annotation: "test-annotation",
 			}
-			err := refs.addFromAnnotation(annotation, nil, machine, bmh)
+			var dg DataGetter = &BMHDataGetter{bmh: bmh}
+			err := refs.addFromAnnotation(annotation, nil, machine, dg)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("is nil but referenced"))
 
@@ -4790,7 +4830,7 @@ var _ = Describe("poolRefs map", func() {
 				Object:     "machine",
 				Annotation: "test-annotation",
 			}
-			err = refs.addFromAnnotation(annotation, m3m, nil, bmh)
+			err = refs.addFromAnnotation(annotation, m3m, nil, dg)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("is nil but referenced"))
 
@@ -4798,7 +4838,7 @@ var _ = Describe("poolRefs map", func() {
 				Object:     "baremetalhost",
 				Annotation: "test-annotation",
 			}
-			err = refs.addFromAnnotation(annotation, m3m, machine, nil)
+			err = refs.addFromAnnotation(annotation, m3m, machine, &BMHDataGetter{nil})
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("is nil but referenced"))
 		})
@@ -4850,7 +4890,8 @@ var _ = Describe("getReferencedPools", func() {
 			},
 		}
 
-		pools, err := getReferencedPools(m3dt, nil, nil, bmh)
+		var dg DataGetter = &BMHDataGetter{bmh: bmh}
+		pools, err := getReferencedPools(m3dt, nil, nil, dg)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(pools).To(HaveLen(2))
 		Expect(pools["ipv4-pool"]).To(Equal(corev1.TypedLocalObjectReference{
@@ -4913,7 +4954,8 @@ var _ = Describe("getReferencedPools", func() {
 			},
 		}
 
-		pools, err := getReferencedPools(m3dt, nil, nil, bmh)
+		var dg DataGetter = &BMHDataGetter{bmh: bmh}
+		pools, err := getReferencedPools(m3dt, nil, nil, dg)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(pools).To(HaveLen(4))
 		Expect(pools["gateway-pool-v4"]).To(Equal(corev1.TypedLocalObjectReference{
@@ -4968,7 +5010,8 @@ var _ = Describe("getReferencedPools", func() {
 			},
 		}
 
-		pools, err := getReferencedPools(m3dt, nil, nil, bmh)
+		var dg DataGetter = &BMHDataGetter{bmh: bmh}
+		pools, err := getReferencedPools(m3dt, nil, nil, dg)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(pools).To(HaveLen(2))
 		Expect(pools["pool-from-annotation"]).To(Equal(corev1.TypedLocalObjectReference{
@@ -5103,7 +5146,8 @@ var _ = Describe("getReferencedPools", func() {
 			},
 		}
 
-		pools, err := getReferencedPools(m3dt, m3m, machine, bmh)
+		var dg DataGetter = &BMHDataGetter{bmh: bmh}
+		pools, err := getReferencedPools(m3dt, m3m, machine, dg)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(pools).To(HaveLen(5))
 		Expect(pools).To(HaveKey("metadata-pool"))
