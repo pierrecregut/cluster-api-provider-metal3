@@ -1443,3 +1443,7 @@ func Convert_v1beta2_NetworkDataServicev6_To_v1beta1_NetworkDataServicev6(in *in
 	}
 	return nil
 }
+
+func Convert_v1beta2_HostSelector_To_v1beta1_HostSelector(in *infrav1.HostSelector, out *HostSelector, s apimachineryconversion.Scope) error {
+	return autoConvert_v1beta2_HostSelector_To_v1beta1_HostSelector(in, out, s)
+}

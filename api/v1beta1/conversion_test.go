@@ -169,6 +169,14 @@ func hubMetal3MachineSpec(in *infrav1.Metal3MachineSpec, c randfill.Continue) {
 	if in.DataTemplate != nil && in.DataTemplate.Name == "" && in.DataTemplate.Namespace == "" {
 		in.DataTemplate = nil
 	}
+
+	// Do not allow fuzzing IdentityRef HostClaim or InNamespace. They do not exist in v1 and never will.
+	in.IdentityRef.Name = ""
+	in.IdentityRef.Context = ""
+	if in.HostSelector != nil {
+		in.HostSelector.InNamespace = ""
+		in.HostSelector.HostClaim = ""
+	}
 }
 
 // hubMetal3MachineTemplateSpec normalizes v1beta2 Metal3MachineTemplateSpec for hub objects.
@@ -178,6 +186,14 @@ func hubMetal3MachineTemplateSpec(in *infrav1.Metal3MachineTemplateSpec, c randf
 	// Normalize NodeReuse: &false → nil (omitempty semantic)
 	if in.NodeReuse != nil && !*in.NodeReuse {
 		in.NodeReuse = nil
+	}
+
+	// Do not allow fuzzing IdentityRef or InNamespace. They do not exist in v1 and never will.
+	in.Template.Spec.IdentityRef.Name = ""
+	in.Template.Spec.IdentityRef.Context = ""
+	if in.Template.Spec.HostSelector != nil {
+		in.Template.Spec.HostSelector.InNamespace = ""
+		in.Template.Spec.HostSelector.HostClaim = ""
 	}
 }
 

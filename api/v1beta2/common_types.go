@@ -66,6 +66,20 @@ type HostSelector struct {
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=512
 	MatchExpressions []HostSelectorRequirement `json:"matchExpressions,omitempty"`
+
+	// inNamespace identifies the namespace where hostclaims should find
+	// baremetalhosts. If it is not specified, there is no restriction on
+	// the namespace of the baremetalhost associated to the hostclaim.
+	// +optional
+	// +kubebuilder:validation:MaxLength=512
+	// +kubebuilder:validation:MinLength=1
+	InNamespace string `json:"inNamespace,omitempty"`
+
+	// hostClaim is a boolean that tells the machine should be associated to
+	// a HostClaim rather than a BareMetalHost.
+	// +kubebuilder:validation:Enum=enabled;disabled
+	// +optional
+	HostClaim HostClaimMode `json:"hostClaim,omitempty"`
 }
 
 type HostSelectorRequirement struct {
@@ -87,6 +101,13 @@ type HostSelectorRequirement struct {
 	// +kubebuilder:validation:items:MaxLength=512
 	Values []string `json:"values,omitempty"`
 }
+
+type HostClaimMode string
+
+const (
+	HostClaimEnabled  HostClaimMode = "enabled"
+	HostClaimDisabled HostClaimMode = "Disabled"
+)
 
 // Image holds the details of an image to use during provisioning.
 type Image struct {
@@ -190,4 +211,18 @@ func (i *Image) Validate(base field.Path) field.ErrorList {
 		}
 	}
 	return errors
+}
+
+// IdentityRef represents a pointer to kubeconfig used to manage remote baremetalhosts or hostclaims.
+type IdentityRef struct {
+	// name is the name of the secret containing the kubeconfig under kubeconfig field
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +required
+	Name string `json:"name,omitempty"`
+	// context is an optional context to use in the kubeconfig file, if it is not the default one.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=255
+	// +optional
+	Context string `json:"context,omitempty"`
 }

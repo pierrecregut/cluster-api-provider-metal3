@@ -195,6 +195,10 @@ type Metal3MachineSpec struct {
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=256
 	FailureDomain string `json:"failureDomain,omitempty"`
+
+	// identityRef identifies a kubeconfig used to access the hostclaim or the baremetalhost associated to this machine.
+	// +optional
+	IdentityRef IdentityRef `json:"identityRef,omitempty,omitzero"`
 }
 
 // Metal3MachineStatus defines the observed state of Metal3Machine.

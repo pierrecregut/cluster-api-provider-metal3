@@ -397,6 +397,22 @@ spec:
                           This is used to limit the set of BareMetalHost objects considered for
                           claiming for a metal3machine.
                         properties:
+                          hostClaim:
+                            description: |-
+                              hostClaim is a boolean that tells the machine should be associated to
+                              a HostClaim rather than a BareMetalHost.
+                            enum:
+                            - enabled
+                            - disabled
+                            type: string
+                          inNamespace:
+                            description: |-
+                              inNamespace identifies the namespace where hostclaims should find
+                              baremetalhosts. If it is not specified, there is no restriction on
+                              the namespace of the baremetalhost associated to the hostclaim.
+                            maxLength: 512
+                            minLength: 1
+                            type: string
                           matchExpressions:
                             description: matchExpressions specifies match expressions
                               that must be true on a chosen BareMetalHost
@@ -439,6 +455,25 @@ spec:
                             description: matchLabels specifies key/value pairs of
                               labels that must exist on a chosen BareMetalHost
                             type: object
+                        type: object
+                      identityRef:
+                        description: identityRef identifies a kubeconfig used to access
+                          the hostclaim or the baremetalhost associated to this machine.
+                        properties:
+                          context:
+                            description: context is an optional context to use in
+                              the kubeconfig file, if it is not the default one.
+                            maxLength: 255
+                            minLength: 1
+                            type: string
+                          name:
+                            description: name is the name of the secret containing
+                              the kubeconfig under kubeconfig field
+                            maxLength: 255
+                            minLength: 1
+                            type: string
+                        required:
+                        - name
                         type: object
                       image:
                         description: |-
