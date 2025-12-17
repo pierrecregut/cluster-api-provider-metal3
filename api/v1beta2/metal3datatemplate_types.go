@@ -79,7 +79,7 @@ type MetaDataFromLabel struct {
 	Key string `json:"key,omitempty"`
 	// object is the type of the object from which we retrieve the name
 	// +required
-	// +kubebuilder:validation:Enum=machine;metal3machine;baremetalhost
+	// +kubebuilder:validation:Enum=machine;metal3machine;baremetalhost;hostclaim
 	Object string `json:"object,omitempty"`
 	// label is the key of the label to fetch
 	// +required
@@ -98,7 +98,7 @@ type MetaDataFromAnnotation struct {
 	Key string `json:"key,omitempty"`
 	// object is the type of the object from which we retrieve the name
 	// +required
-	// +kubebuilder:validation:Enum=machine;metal3machine;baremetalhost
+	// +kubebuilder:validation:Enum=machine;metal3machine;baremetalhost;hostclaim
 	Object string `json:"object,omitempty"`
 	// annotation is the key of the annotation to fetch
 	// +required
@@ -139,7 +139,7 @@ type MetaDataObjectName struct {
 	Key string `json:"key,omitempty"`
 	// object is the type of the object from which we retrieve the name
 	// +required
-	// +kubebuilder:validation:Enum=machine;metal3machine;baremetalhost
+	// +kubebuilder:validation:Enum=machine;metal3machine;baremetalhost;hostclaim
 	Object string `json:"object,omitempty"`
 }
 

@@ -95,7 +95,7 @@ func (f ManagerFactory) NewDataTemplateManager(metadata *infrav1.Metal3DataTempl
 
 // NewDataManager creates a new DataManager.
 func (f ManagerFactory) NewDataManager(metadata *infrav1.Metal3Data, metadataLog logr.Logger) (DataManagerInterface, error) {
-	return NewDataManager(f.client, metadata, metadataLog)
+	return NewDataManager(f.client, f.remoteClientCache, metadata, metadataLog)
 }
 
 // NewMachineTemplateManager creates a new Metal3MachineTemplateManager.
