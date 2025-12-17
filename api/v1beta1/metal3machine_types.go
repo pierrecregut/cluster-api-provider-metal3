@@ -163,6 +163,10 @@ type Metal3MachineSpec struct {
 
 	// FailureDomain is the failure domain unique identifier this Machine should be attached to, as defined in Cluster API.
 	FailureDomain string `json:"failureDomain,omitempty"`
+
+	// IdentityRef identifies a kubeconfig used to access the hostclaim or the baremetalhost associated to this machine.
+	// +optional
+	IdentityRef *IdentityRef `json:"identityRef,omitempty"`
 }
 
 // Metal3MachineStatus defines the observed state of Metal3Machine.

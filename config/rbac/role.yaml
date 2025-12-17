@@ -194,6 +194,7 @@ rules:
   - metal3.io
   resources:
   - baremetalhosts
+  - hostclaims
   verbs:
   - create
   - delete
@@ -206,6 +207,7 @@ rules:
   - metal3.io
   resources:
   - baremetalhosts/status
+  - hostclaims/status
   verbs:
   - get
   - patch

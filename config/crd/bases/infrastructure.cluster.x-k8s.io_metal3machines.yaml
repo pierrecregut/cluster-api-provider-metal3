@@ -144,6 +144,14 @@ spec:
                   This is used to limit the set of BareMetalHost objects considered for
                   claiming for a metal3machine.
                 properties:
+                  inNamespace:
+                    description: |-
+                      InNamespace identifies the namespace where hostclaims should find
+                      baremetalhosts. If it is not specified, the metal3machine will be directly
+                      associated to a baremetalhost. If it is the empty string, there is
+                      no restriction on the namespace of the baremetalhost associated to the
+                      hostclaim.
+                    type: string
                   matchExpressions:
                     description: Label match expressions that must be true on a chosen
                       BareMetalHost
@@ -172,6 +180,21 @@ spec:
                     description: Key/value pairs of labels that must exist on a chosen
                       BareMetalHost
                     type: object
+                type: object
+              identityRef:
+                description: IdentityRef identifies a kubeconfig used to access the
+                  hostclaim or the baremetalhost associated to this machine.
+                properties:
+                  context:
+                    description: Optional context to use in the kubeconfig file, if
+                      it is not the default one.
+                    type: string
+                  name:
+                    description: Name of the secret containing the kubeconfig under
+                      kubeconfig field
+                    type: string
+                required:
+                - name
                 type: object
               image:
                 description: Image is the image to be provisioned.

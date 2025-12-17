@@ -51,6 +51,13 @@ type HostSelector struct {
 	// Label match expressions that must be true on a chosen BareMetalHost
 	// +optional
 	MatchExpressions []HostSelectorRequirement `json:"matchExpressions,omitempty"`
+
+	// InNamespace identifies the namespace where hostclaims should find
+	// baremetalhosts. If it is not specified, the metal3machine will be directly
+	// associated to a baremetalhost. If it is the empty string, there is
+	// no restriction on the namespace of the baremetalhost associated to the
+	// hostclaim.
+	InNamespace *string `json:"inNamespace,omitempty"`
 }
 
 type HostSelectorRequirement struct {
@@ -119,4 +126,12 @@ func (i *Image) Validate(base field.Path) field.ErrorList {
 		}
 	}
 	return errors
+}
+
+// IdentityRef represents a pointer to kubeconfig used to manage remote baremetalhosts or hostclaims.
+type IdentityRef struct {
+	// Name of the secret containing the kubeconfig under kubeconfig field
+	Name string `json:"name"`
+	// Optional context to use in the kubeconfig file, if it is not the default one.
+	Context string `json:"context,omitempty"`
 }
