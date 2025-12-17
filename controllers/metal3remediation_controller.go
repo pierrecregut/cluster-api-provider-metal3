@@ -132,7 +132,7 @@ func (r *Metal3RemediationReconciler) reconcileNormal(ctx context.Context,
 	remediationMgr baremetal.RemediationManagerInterface,
 ) (ctrl.Result, error) {
 	// If host is gone, exit early
-	host, _, err := remediationMgr.GetUnhealthyHost(ctx)
+	online, err := remediationMgr.OnlineStatus(ctx)
 	if err != nil {
 		r.Log.Error(err, "unable to find a host for unhealthy machine")
 		return ctrl.Result{}, errors.Wrapf(err, "unable to find a host for unhealthy machine")
@@ -140,7 +140,7 @@ func (r *Metal3RemediationReconciler) reconcileNormal(ctx context.Context,
 
 	// If user has set bmh.Spec.Online to false
 	// do not try to remediate the host
-	if !remediationMgr.OnlineStatus(host) {
+	if !online {
 		r.Log.Info("Unable to remediate, Host is powered off (spec.Online is false)")
 		remediationMgr.SetRemediationPhase(infrav1.PhaseFailed)
 		return ctrl.Result{}, nil

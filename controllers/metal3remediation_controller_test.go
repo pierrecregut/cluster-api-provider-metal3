@@ -18,17 +18,16 @@ package controllers
 
 import (
 	"context"
-	"errors"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/golang/mock/gomock"
-	bmov1alpha1 "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
 	infrav1 "github.com/metal3-io/cluster-api-provider-metal3/api/v1beta1"
 	"github.com/metal3-io/cluster-api-provider-metal3/baremetal"
 	baremetal_mocks "github.com/metal3-io/cluster-api-provider-metal3/baremetal/mocks"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/pkg/errors"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -85,21 +84,18 @@ func setReconcileNormalRemediationExpectations(ctrl *gomock.Controller,
 	tc reconcileNormalRemediationTestCase) *baremetal_mocks.MockRemediationManagerInterface {
 	m := baremetal_mocks.NewMockRemediationManagerInterface(ctrl)
 
-	bmh := &bmov1alpha1.BareMetalHost{}
-	if tc.GetUnhealthyHostFails {
-		m.EXPECT().GetUnhealthyHost(context.TODO()).Return(nil, nil, errors.New("can't find foo_bmh"))
-		return m
-	}
-	m.EXPECT().GetUnhealthyHost(context.TODO()).Return(bmh, nil, nil)
-
 	// If user has set bmh.Spec.Online to false, do not try to remediate the host and set remediation phase to failed
-	if tc.HostStatusOffline {
-		m.EXPECT().OnlineStatus(bmh).Return(false)
-		m.EXPECT().SetRemediationPhase(infrav1.PhaseFailed)
+	if tc.GetUnhealthyHostFails {
+		m.EXPECT().OnlineStatus(gomock.Any()).Return(false, errors.New("can't find foo_bmh"))
 		return m
+	} else {
+		if tc.HostStatusOffline {
+			m.EXPECT().OnlineStatus(gomock.Any()).Return(false, nil)
+			m.EXPECT().SetRemediationPhase(infrav1.PhaseFailed)
+			return m
+		}
+		m.EXPECT().OnlineStatus(gomock.Any()).Return(true, nil)
 	}
-	m.EXPECT().OnlineStatus(bmh).Return(true)
-
 	node := &corev1.Node{
 		TypeMeta: metav1.TypeMeta{},
 		ObjectMeta: metav1.ObjectMeta{

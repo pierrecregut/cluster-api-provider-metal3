@@ -106,5 +106,5 @@ func (f ManagerFactory) NewMachineTemplateManager(capm3Template *infrav1.Metal3M
 func (f ManagerFactory) NewRemediationManager(remediation *infrav1.Metal3Remediation,
 	metal3machine *infrav1.Metal3Machine, machine *clusterv1.Machine,
 	remediationLog logr.Logger) (RemediationManagerInterface, error) {
-	return NewRemediationManager(f.client, capm3remote.NewClusterClient, remediation, metal3machine, machine, remediationLog)
+	return NewRemediationManager(f.client, f.RemoteClientCache, capm3remote.NewClusterClient, remediation, metal3machine, machine, remediationLog)
 }
