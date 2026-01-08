@@ -724,18 +724,22 @@ func setErrorM3Machine(m3m *infrav1.Metal3Machine, message string, reason capier
 func checkMachineError(machineMgr baremetal.MachineManagerInterface, err error,
 	errMessage string, errType capierrors.MachineStatusError) (ctrl.Result, error) {
 	if err == nil {
+		machineMgr.GetLog().Info("no error")
 		return ctrl.Result{}, nil
 	}
 
 	var reconcileError baremetal.ReconcileError
 	if errors.As(err, &reconcileError) {
 		if reconcileError.IsTransient() {
+			machineMgr.GetLog().Info("Requeueuing", "duration", reconcileError.GetRequeueAfter())
 			return reconcile.Result{Requeue: true, RequeueAfter: reconcileError.GetRequeueAfter()}, nil
 		}
 		if reconcileError.IsTerminal() {
+			machineMgr.GetLog().Info("Terminal error")
 			machineMgr.SetError(errMessage, errType)
 			return reconcile.Result{}, nil
 		}
 	}
+	machineMgr.GetLog().Info("Bad error")
 	return ctrl.Result{}, errors.Wrap(err, errMessage)
 }

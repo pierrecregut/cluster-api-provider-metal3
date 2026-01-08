@@ -14,9 +14,9 @@ require (
 	github.com/spf13/pflag v1.0.10
 	golang.org/x/exp v0.0.0-20240719175910-8a7402abbf56
 	gopkg.in/yaml.v2 v2.4.0
-	k8s.io/api v0.34.2
+	k8s.io/api v0.34.3
 	k8s.io/apiextensions-apiserver v0.34.2
-	k8s.io/apimachinery v0.34.2
+	k8s.io/apimachinery v0.34.3
 	k8s.io/client-go v0.34.2
 	k8s.io/component-base v0.34.2
 	k8s.io/klog/v2 v2.130.1
@@ -28,7 +28,7 @@ require (
 
 replace github.com/metal3-io/cluster-api-provider-metal3/api => ./api
 
-replace github.com/metal3-io/baremetal-operator/apis => gitlab.com/Orange-OpenSource/kanod/baremetal-operator/apis v0.12.0-beta.0
+replace github.com/metal3-io/baremetal-operator/apis => gitlab.com/Orange-OpenSource/kanod/baremetal-operator/apis v0.12.0-beta.1
 
 require (
 	cel.dev/expr v0.24.0 // indirect

@@ -19,6 +19,7 @@ package baremetal
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/go-logr/logr"
 	bmov1alpha1 "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
@@ -30,7 +31,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/utils/ptr"
 	clusterv1beta1 "sigs.k8s.io/cluster-api/api/core/v1beta1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	capierrors "sigs.k8s.io/cluster-api/errors"
@@ -42,6 +42,7 @@ import (
 
 const (
 	HostClaimAnnotation = "metal3.io/hostclaim"
+	nodeReuseValidUntil = "infrastructure.cluster.x-k8s.io/node-reuse-valid-until"
 )
 
 // MachineHostManager is responsible for performing machine reconciliation.
@@ -59,7 +60,7 @@ var _ MachineManagerInterface = &MachineHostManager{}
 func NewMachineHostManager(localClient client.Client, clientCache RemoteClientCacheInterface,
 	cluster *clusterv1.Cluster, metal3Cluster *infrav1.Metal3Cluster,
 	machine *clusterv1.Machine, metal3machine *infrav1.Metal3Machine,
-	machineLog logr.Logger) (MachineManagerInterface, error) {
+	machineLog logr.Logger) (*MachineHostManager, error) {
 	remoteClient, err := clientCache.GetRemoteClient(machineLog, metal3machine)
 	if err != nil {
 		return nil, err
@@ -82,34 +83,18 @@ func NewMachineHostManager(localClient client.Client, clientCache RemoteClientCa
 	}, nil
 }
 
-// SetFinalizer sets finalizer - promoted
-
-// UnsetFinalizer unsets finalizer - promoted
-
-// IsProvisioned checks if the metal3machine is provisioned. - promoted
-
-// IsBootstrapReady checks if the machine is given Bootstrap data. - promoted
-
-// GetBaremetalHostID return the provider identifier for this machine.
-// We store the BMH UUID in the HostUID when the bmh is provisionned.
-func (m *MachineHostManager) GetBaremetalHostID(ctx context.Context) (*string, error) {
-	// look for associated BMH
-	host, _, err := m.getHost(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if host == nil {
-		errMessage := "BareMetalHost not associated, requeuing"
-		m.Log.Info(errMessage)
-		return nil, WithTransientError(errors.New(errMessage), requeueAfter)
-	}
-	if host.Status.HostUID != "" {
-		return ptr.To(host.Status.HostUID), nil
-	}
-	m.Log.Info("Provisioning BaremetalHost, requeuing")
-	// Do not requeue since BMH update will trigger a reconciliation
-	return nil, nil
-}
+// The following functions are inherited from the metal3machine manager
+// * SetFinalizer sets finalizer
+// * UnsetFinalizer unsets finalizer
+// * IsProvisioned checks if the metal3machine is provisioned.
+// * IsBootstrapReady checks if the machine is given Bootstrap data.
+// * GetProviderIDAndBMHID returns providerID and bmhID.
+// * SetProviderID sets the metal3 provider ID on the Metal3Machine.
+// * DissociateM3Metadata removes machine from OwnerReferences of meta3DataTemplate, on failure requeue.
+// * AssociateM3Metadata fetches the Metal3DataTemplate object and sets the owner references.
+// * SetError sets the ErrorMessage and ErrorReason fields on the machine and logs the message.
+// * SetConditionMetal3MachineToFalse sets Metal3Machine condition status to False.
+// * SetConditionMetal3MachineToTrue sets Metal3Machine condition status to True.
 
 // Associate associates a machine and is invoked by the Machine Controller.
 func (m *MachineHostManager) Associate(ctx context.Context) error {
@@ -178,42 +163,6 @@ func (m *MachineHostManager) Associate(ctx context.Context) error {
 		return err
 	}
 
-	if m.Metal3Machine.Spec.DataTemplate != nil {
-		// Requeue to get the DataTemplate output. We need to requeue to trigger the
-		// wait on the Metal3DataTemplate
-		if err := m.WaitForM3Metadata(ctx); err != nil {
-			return err
-		}
-
-		// If the requeue is not needed, then get the updated host and set the host
-		// specs
-		host, helper, err = m.getHost(ctx)
-		if err != nil {
-			m.SetError("Failed to get the BaremetalHost for the Metal3Machine",
-				capierrors.CreateMachineError,
-			)
-			return err
-		}
-
-		if err = m.setHostSpec(ctx, host); err != nil {
-			return err
-		}
-
-		// Update the BMH object.
-		err = helper.Patch(ctx, host)
-		if err != nil {
-			var aggr kerrors.Aggregate
-			if ok := errors.As(err, &aggr); ok {
-				for _, kerr := range aggr.Errors() {
-					if apierrors.IsConflict(kerr) {
-						return WithTransientError(kerr, requeueAfter)
-					}
-				}
-			}
-			return err
-		}
-	}
-
 	m.Log.Info("Finished associating machine")
 
 	return nil
@@ -222,35 +171,67 @@ func (m *MachineHostManager) Associate(ctx context.Context) error {
 // Delete deletes a metal3 machine and is invoked by the Machine Controller.
 // All the burden is on the Host implementation.
 func (m *MachineHostManager) Delete(ctx context.Context) error {
-	m.Log.Info("Deleting metal3 machine", "metal3machine", m.Metal3Machine.Name)
-
+	m.Log.Info("Deleting metal3 machine")
 	host, helper, err := m.getHost(ctx)
 	if err != nil {
 		return err
 	}
 	if host == nil {
-		m.Log.Info("host not found for metal3machine", "metal3machine", m.Metal3Machine.Name)
+		m.Log.Info("host not found for metal3machine")
 		if m.remoteClient != nil {
 			m.remoteClient.Release(m.Metal3Machine)
 		}
 		return nil
 	}
-
-	if host.Spec.ConsumerRef != nil {
-		// If nodeReuse is set but cluster is being deleted, remove nodeReuse.
+	var nodeReuse bool
+	if host.Labels != nil {
+		// The cluster being deleted, do not take nodeReuse into account.
 		if m.Cluster == nil || !m.Cluster.DeletionTimestamp.IsZero() {
-			if host.Labels != nil {
-				delete(host.Labels, nodeReuseLabelName)
-			}
+			delete(host.Labels, nodeReuseLabelName)
 		}
+		_, nodeReuse = host.Labels[nodeReuseLabelName]
+	}
+	if nodeReuse {
+		// In nodeReuse mode, we do not delete the hostClaim but deprovision it
+		// and let it available to other nodes. We only perform this once and
+		// we check that The M3Machine still owns the hostClaim
+		if consumerRefMatches(host.Spec.ConsumerRef, m.Metal3Machine) {
+			m.Log.Info("Clearing hostClaim (node reuse mode)")
+			if host.Spec.Image != nil {
+				host.Spec.Image = nil
+				host.Spec.UserData = nil
+				host.Spec.NetworkData = nil
+				host.Spec.MetaData = nil
+				host.Spec.Online = false
+				if err := helper.Patch(ctx, host); err != nil {
+					m.Log.Error(err, "Failed to unbind hostClaim from Metal3Machine")
+					return err
+				}
+				errMessage := "Waiting for clean-up of HostClaim"
+				return WithTransientError(errors.New(errMessage), requeueAfter)
+			}
+			// TODO Fix me. valider que le BMH est bien déprovisionné et Ready.
+			if !conditions.IsTrue(host, bmov1alpha1.AvailableCondition) {
+				errMessage := "Waiting for clean-up of HostClaim"
+				return WithTransientError(errors.New(errMessage), requeueAfter)
+			}
+			if host.Annotations == nil {
+				host.Annotations = map[string]string{}
+			}
+			host.Annotations[nodeReuseValidUntil] = getExpiryDate()
+			host.Spec.ConsumerRef = nil
+			if err := helper.Patch(ctx, host); err != nil {
+				m.Log.Error(err, "Failed to unbind hostClaim from Metal3Machine")
+				return err
+			}
+			return nil
+		}
+		return nil
+	}
+	// The consumerRef is used as a barrier to check before hostclaim deletion.
+	if host.Spec.ConsumerRef != nil {
 
 		host.Spec.ConsumerRef = nil
-
-		if host.Labels != nil && host.Labels[clusterv1.ClusterNameLabel] == m.Machine.Spec.ClusterName {
-			delete(host.Labels, clusterv1.ClusterNameLabel)
-		}
-
-		// Do not remove pause annotation: we want the hostClaim to remove it.
 
 		// Delete created secret, if data was set without DataSecretName
 		if m.Machine.Spec.Bootstrap.DataSecretName == nil {
@@ -340,10 +321,6 @@ func (m *MachineHostManager) HasAnnotation() bool {
 	return ok
 }
 
-// GetProviderIDAndBMHID returns providerID and bmhID. - promoted
-
-// SetProviderID sets the metal3 provider ID on the Metal3Machine. - promoted
-
 // SetPauseAnnotation sets the pause annotations on associated bmh.
 func (m *MachineHostManager) SetPauseAnnotation(ctx context.Context) error {
 	// look for associated HostClaim
@@ -410,19 +387,6 @@ func (m *MachineHostManager) RemovePauseAnnotation(ctx context.Context) error {
 	return helper.Patch(ctx, host)
 }
 
-// DissociateM3Metadata removes machine from OwnerReferences of meta3DataTemplate, on failure requeue. - promoted
-
-// AssociateM3Metadata fetches the Metal3DataTemplate object and sets the
-// owner references. - promoted
-
-// SetError sets the ErrorMessage and ErrorReason fields on the machine and logs
-// the message. It assumes the reason is invalid configuration, since that is
-// currently the only relevant MachineStatusError choice. - promoted
-
-// SetConditionMetal3MachineToFalse sets Metal3Machine condition status to False. - promoted
-
-// SetConditionMetal3MachineToTrue sets Metal3Machine condition status to True. - promoted
-
 // getHost gets the associated host by looking for an annotation on the machine
 // that contains a reference to the host. Returns nil if not found. Assumes the
 // host is in the same namespace as the machine.
@@ -482,6 +446,10 @@ func (m *MachineHostManager) setHostLabel(_ context.Context, host *bmov1alpha1.H
 	return nil
 }
 
+// Synchronize the secrets from the m3machine namespace to the hostclaim
+// namespace. Original secrets are defined by a reference.
+// Names are derived from the hostClaim name with a suffix (purpose).
+// the function gives back a reference to the new secret or an error.
 func (m *MachineHostManager) syncSecretData(
 	ctx context.Context, source *corev1.SecretReference,
 	host *bmov1alpha1.HostClaim, purpose string,
@@ -539,13 +507,6 @@ func (m *MachineHostManager) syncSecretData(
 // details. It will then update the host via the kube API. If UserData does not
 // include a Namespace, it will default to the Metal3Machine's namespace.
 func (m *MachineHostManager) setHostSpec(ctx context.Context, host *bmov1alpha1.HostClaim) error {
-	// We only want to update the image setting if the host does not
-	// already have an image.
-	//
-	// A host with an existing image is already provisioned and
-	// upgrades are not supported at this time. To re-provision a
-	// host, we must fully deprovision it and then provision it again.
-
 	host.Spec.Online = false
 
 	if m.Metal3Machine.Status.UserData == nil || m.Metal3Machine.Status.MetaData == nil {
@@ -615,8 +576,14 @@ func translateHostRequirements(meList []infrav1.HostSelectorRequirement) []bmov1
 }
 
 // chooseHost iterates through known hosts and returns one that can be
-// associated with the metal3 machine. It searches all hosts in case one already has an
-// association with this metal3 machine.
+// associated with the metal3 machine.
+//
+// It searches all hosts in case one already has an association with this
+// metal3 machine. createHost finds/creates a suitable HostClaim for the metal3
+// machine. If we are in the nodeReuse case, we first check there is not an
+// available unbound hostClaim with the right label. If it fails or if it is
+// not in node reuse mode, a new hostClaim is created with the name of the
+// metal3 machine.
 func (m *MachineHostManager) createHost(ctx context.Context) (*bmov1alpha1.HostClaim, *patch.Helper, error) {
 	namespace := m.Metal3Machine.Namespace
 	hostClient := m.client
@@ -626,50 +593,86 @@ func (m *MachineHostManager) createHost(ctx context.Context) (*bmov1alpha1.HostC
 	}
 
 	checksumType := ""
+	image := bmov1alpha1.Image{
+		URL:          m.Metal3Machine.Spec.Image.URL,
+		Checksum:     m.Metal3Machine.Spec.Image.Checksum,
+		ChecksumType: bmov1alpha1.ChecksumType(checksumType),
+		DiskFormat:   m.Metal3Machine.Spec.Image.DiskFormat,
+	}
 	if m.Metal3Machine.Spec.Image.ChecksumType != nil {
 		checksumType = *m.Metal3Machine.Spec.Image.ChecksumType
 	}
 
 	matchLabels := maps.Clone(m.Metal3Machine.Spec.HostSelector.MatchLabels)
-
-	host := &bmov1alpha1.HostClaim{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      m.Metal3Machine.Name,
-			Namespace: namespace,
-		},
-		Spec: bmov1alpha1.HostClaimSpec{
-			HostSelector: bmov1alpha1.HostSelector{
-				MatchLabels:      matchLabels,
-				MatchExpressions: translateHostRequirements(m.Metal3Machine.Spec.HostSelector.MatchExpressions),
-				InNamespace:      *m.Metal3Machine.Spec.HostSelector.InNamespace,
-			},
-			Image: &bmov1alpha1.Image{
-				URL:          m.Metal3Machine.Spec.Image.URL,
-				Checksum:     m.Metal3Machine.Spec.Image.Checksum,
-				ChecksumType: bmov1alpha1.ChecksumType(checksumType),
-				DiskFormat:   m.Metal3Machine.Spec.Image.DiskFormat,
-			},
-			Online: false,
-		},
+	selector := bmov1alpha1.HostSelector{
+		MatchLabels:      matchLabels,
+		MatchExpressions: translateHostRequirements(m.Metal3Machine.Spec.HostSelector.MatchExpressions),
+		InNamespace:      *m.Metal3Machine.Spec.HostSelector.InNamespace,
 	}
 	nodeReuseValue, err := m.nodeReuseValue(ctx)
 	if err != nil {
 		m.Log.Error(err, "Error during computation of nodeReuseLabel value")
 	}
+	var host *bmov1alpha1.HostClaim
+
 	if nodeReuseValue != nil {
-		host.Labels = map[string]string{
-			nodeReuseLabelName: *nodeReuseValue,
+		reusableHostclaims := bmov1alpha1.HostClaimList{}
+		if err := hostClient.List(ctx, &reusableHostclaims, client.InNamespace(namespace), client.MatchingLabels{nodeReuseLabelName: *nodeReuseValue}); err != nil {
+			m.Log.Error(err, "Error listing reusable nodes")
+			return nil, nil, err
+		}
+		for _, candidate := range reusableHostclaims.Items {
+			if candidate.Spec.ConsumerRef == nil && host == nil {
+				// This may be a reasonable choice
+				host = &candidate
+			} else {
+				if consumerRefMatches(candidate.Spec.ConsumerRef, m.Metal3Machine) {
+					// Already bound to us (conflict on update). This is the choice to use
+					host = &candidate
+					break
+				}
+			}
 		}
 	}
-	if hostClient == nil { // should never happen
-		err := errors.New("no hostClient")
-		m.Log.Error(err, "client for creating hostclaim not found")
-		return nil, nil, err
-	}
-	err = hostClient.Create(ctx, host)
-	if err != nil {
-		m.Log.Error(err, "Cannot create an associated host")
-		return nil, nil, err
+	if host != nil {
+		// We found a node to reuse and we update it
+		m.setHostConsumerRef(ctx, host)
+		if host.Annotations != nil {
+			delete(host.Annotations, nodeReuseValidUntil)
+		}
+		host.Spec.Image = &image
+		host.Spec.HostSelector = selector
+		err = hostClient.Update(ctx, host)
+		if err != nil {
+			m.Log.Error(err, "Cannot bind to a reusable host")
+			return nil, nil, err
+		}
+	} else {
+		// We must create a new hostClaim either because we are not in node
+		// reuse mode or we did not find a node to reuse.
+		host = &bmov1alpha1.HostClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      m.Metal3Machine.Name,
+				Namespace: namespace,
+			},
+			Spec: bmov1alpha1.HostClaimSpec{
+				HostSelector: selector,
+				Image:        &image,
+				Online:       false,
+			},
+		}
+		m.setHostConsumerRef(ctx, host)
+		if nodeReuseValue != nil {
+			host.Labels = map[string]string{
+				nodeReuseLabelName: *nodeReuseValue,
+			}
+		}
+
+		err = hostClient.Create(ctx, host)
+		if err != nil {
+			m.Log.Error(err, "Cannot create an associated host")
+			return nil, nil, err
+		}
 	}
 	helper, err := patch.NewHelper(host, hostClient)
 	return host, helper, err
@@ -764,14 +767,11 @@ func (m *MachineHostManager) setHostConsumerRef(_ context.Context, host *bmov1al
 		APIVersion: m.Metal3Machine.APIVersion,
 	}
 
-	// Set OwnerReferences if not remote. If remote clearly something else must
-	// be used.
+	// Set OwnerReferences if not remote. Mainly used for pivoting the hostclaims.
+	// We put it on the cluster rather than the metal3machine.
+	// Deletion is handled separately especially if node-reuse is enabled.
 	if m.remoteClient == nil {
-		hostOwnerReferences, err := m.SetOwnerRef(host.OwnerReferences, true)
-		if err != nil {
-			return err
-		}
-		host.OwnerReferences = hostOwnerReferences
+		controllerutil.SetOwnerReference(m.Cluster, host, m.client.Scheme())
 	}
 
 	return nil
@@ -794,7 +794,7 @@ func (m *MachineHostManager) nodeReuseValue(ctx context.Context) (*string, error
 	}
 	if m.hasTemplateAnnotation() {
 		m3mtKey := client.ObjectKey{
-			Name:      m.Metal3Machine.ObjectMeta.GetAnnotations()[clusterv1.TemplateClonedFromNameAnnotation],
+			Name:      m.Metal3Machine.Annotations[clusterv1.TemplateClonedFromNameAnnotation],
 			Namespace: m.Metal3Machine.Namespace,
 		}
 		if err := m.client.Get(ctx, m3mtKey, m3mt); err != nil {
@@ -809,26 +809,24 @@ func (m *MachineHostManager) nodeReuseValue(ctx context.Context) (*string, error
 			m.Log.Info("Found Metal3machineTemplate", "metal3machineTemplate", m3mtKey.Name)
 		}
 	}
-	if m3mt != nil {
-		if m3mt.Spec.NodeReuse {
-			// Check if machine is ControlPlane
-			if m.isControlPlane() {
-				// Fetch ControlPlane name for controlplane machine
-				cpName, err := m.getControlPlaneName(ctx)
-				if err != nil {
-					return nil, err
-				}
-				// Set nodeReuseLabelName on the host to ControlPlane name
-				return &cpName, nil
-			}
-			// Fetch MachineDeployment name for worker machine
-			mdName, err := m.getMachineDeploymentName(ctx)
+	if m3mt != nil && m3mt.Spec.NodeReuse {
+		// Check if machine is ControlPlane
+		if m.isControlPlane() {
+			// Fetch ControlPlane name for controlplane machine
+			cpName, err := m.getControlPlaneName(ctx)
 			if err != nil {
 				return nil, err
 			}
-			// Set nodeReuseLabelName on the host to MachineDeployment name
-			return &mdName, nil
+			// Set nodeReuseLabelName on the host to ControlPlane name
+			return &cpName, nil
 		}
+		// Fetch MachineDeployment name for worker machine
+		mdName, err := m.getMachineDeploymentName(ctx)
+		if err != nil {
+			return nil, err
+		}
+		// Set nodeReuseLabelName on the host to MachineDeployment name
+		return &mdName, nil
 	}
 	return nil, nil
 }
@@ -874,4 +872,11 @@ func (m *MachineHostManager) GetBmhNameFromM3Machine(ctx context.Context) (strin
 		return "", errors.New(errMessage)
 	}
 	return host.Status.HardwareData.Name, nil
+}
+
+// getExpiryDate gives back a date after which a reusable hostClaim may be reclaimed. This is usually due to a scale
+// down of the coresponding deployment.
+func getExpiryDate() string {
+	expiry := time.Now().Add(3600 * time.Second)
+	return expiry.Format(time.RFC822)
 }

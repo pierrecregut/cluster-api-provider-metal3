@@ -945,7 +945,13 @@ func consumerRefMatches(consumer *corev1.ObjectReference, m3machine *infrav1.Met
 	if consumer.Namespace != m3machine.Namespace {
 		return false
 	}
-	if consumer.Kind != metal3MachineKind {
+
+	kind := metal3MachineKind
+	if m3machine.Spec.IdentityRef != nil {
+		kind = remoteMetal3MachineKind
+	}
+
+	if consumer.Kind != kind {
 		return false
 	}
 
