@@ -42,7 +42,7 @@ import (
 
 const (
 	HostClaimAnnotation = "metal3.io/hostclaim"
-	nodeReuseValidUntil = "infrastructure.cluster.x-k8s.io/node-reuse-valid-until"
+	nodeReuseCleared    = "infrastructure.cluster.x-k8s.io/node-reuse-cleared-at"
 )
 
 // MachineHostManager is responsible for performing machine reconciliation.
@@ -197,28 +197,15 @@ func (m *MachineHostManager) Delete(ctx context.Context) error {
 		// we check that The M3Machine still owns the hostClaim
 		if consumerRefMatches(host.Spec.ConsumerRef, m.Metal3Machine) {
 			m.Log.Info("Clearing hostClaim (node reuse mode)")
-			if host.Spec.Image != nil {
-				host.Spec.Image = nil
-				host.Spec.UserData = nil
-				host.Spec.NetworkData = nil
-				host.Spec.MetaData = nil
-				host.Spec.Online = false
-				if err := helper.Patch(ctx, host); err != nil {
-					m.Log.Error(err, "Failed to unbind hostClaim from Metal3Machine")
-					return err
-				}
-				errMessage := "Waiting for clean-up of HostClaim"
-				return WithTransientError(errors.New(errMessage), requeueAfter)
-			}
-			// TODO Fix me. valider que le BMH est bien déprovisionné et Ready.
-			if !conditions.IsTrue(host, bmov1alpha1.AvailableCondition) {
-				errMessage := "Waiting for clean-up of HostClaim"
-				return WithTransientError(errors.New(errMessage), requeueAfter)
-			}
+			host.Spec.Image = nil
+			host.Spec.UserData = nil
+			host.Spec.NetworkData = nil
+			host.Spec.MetaData = nil
+			host.Spec.Online = false
 			if host.Annotations == nil {
 				host.Annotations = map[string]string{}
 			}
-			host.Annotations[nodeReuseValidUntil] = getExpiryDate()
+			host.Annotations[nodeReuseCleared] = time.Now().Format(time.RFC822)
 			host.Spec.ConsumerRef = nil
 			if err := helper.Patch(ctx, host); err != nil {
 				m.Log.Error(err, "Failed to unbind hostClaim from Metal3Machine")
@@ -612,19 +599,25 @@ func (m *MachineHostManager) createHost(ctx context.Context) (*bmov1alpha1.HostC
 	nodeReuseValue, err := m.nodeReuseValue(ctx)
 	if err != nil {
 		m.Log.Error(err, "Error during computation of nodeReuseLabel value")
+		return nil, nil, err
 	}
 	var host *bmov1alpha1.HostClaim
 
 	if nodeReuseValue != nil {
+		var futureCandidate bool
 		reusableHostclaims := bmov1alpha1.HostClaimList{}
 		if err := hostClient.List(ctx, &reusableHostclaims, client.InNamespace(namespace), client.MatchingLabels{nodeReuseLabelName: *nodeReuseValue}); err != nil {
 			m.Log.Error(err, "Error listing reusable nodes")
 			return nil, nil, err
 		}
 		for _, candidate := range reusableHostclaims.Items {
-			if candidate.Spec.ConsumerRef == nil && host == nil {
-				// This may be a reasonable choice
-				host = &candidate
+			if candidate.Spec.ConsumerRef == nil {
+				if conditions.IsTrue(&candidate, bmov1alpha1.AvailableCondition) {
+					// This may be a reasonable choice
+					host = &candidate
+				} else {
+					futureCandidate = true
+				}
 			} else {
 				if consumerRefMatches(candidate.Spec.ConsumerRef, m.Metal3Machine) {
 					// Already bound to us (conflict on update). This is the choice to use
@@ -633,12 +626,16 @@ func (m *MachineHostManager) createHost(ctx context.Context) (*bmov1alpha1.HostC
 				}
 			}
 		}
+		if host == nil && futureCandidate {
+			m.Log.Info("Waiting for a candidate reusable node")
+			return nil, nil, WithTransientError(nil, requeueAfter)
+		}
 	}
 	if host != nil {
 		// We found a node to reuse and we update it
 		m.setHostConsumerRef(ctx, host)
 		if host.Annotations != nil {
-			delete(host.Annotations, nodeReuseValidUntil)
+			delete(host.Annotations, nodeReuseCleared)
 		}
 		host.Spec.Image = &image
 		host.Spec.HostSelector = selector
@@ -872,11 +869,4 @@ func (m *MachineHostManager) GetBmhNameFromM3Machine(ctx context.Context) (strin
 		return "", errors.New(errMessage)
 	}
 	return host.Status.HardwareData.Name, nil
-}
-
-// getExpiryDate gives back a date after which a reusable hostClaim may be reclaimed. This is usually due to a scale
-// down of the coresponding deployment.
-func getExpiryDate() string {
-	expiry := time.Now().Add(3600 * time.Second)
-	return expiry.Format(time.RFC822)
 }
