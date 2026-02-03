@@ -61,6 +61,7 @@ const (
 	baremetalhostName      = "controller-testbaremetalhostname"
 	metal3DataName         = "controller-testmetal3dataname"
 	metal3DataClaimName    = "baremetal-testmetal3dataclaim"
+	hostClaimName          = "controller-testhostclaim"
 )
 
 func init() {
@@ -163,6 +164,20 @@ func m3mObjectMetaWithOwnerRef() *metav1.ObjectMeta {
 	}
 }
 
+func m3mObjectMetaWithOwnerRefWithAnnotations(annotationKey string, annotationValue string) *metav1.ObjectMeta {
+	return &metav1.ObjectMeta{
+		Name:            metal3machineName,
+		Namespace:       namespaceName,
+		OwnerReferences: m3mOwnerRefs(),
+		Labels: map[string]string{
+			clusterv1.ClusterNameLabel: clusterName,
+		},
+		Annotations: map[string]string{
+			annotationKey: annotationValue,
+		},
+	}
+}
+
 func bmcSpec() *infrav1.Metal3ClusterSpec {
 	return &infrav1.Metal3ClusterSpec{
 		ControlPlaneEndpoint: infrav1.APIEndpoint{
@@ -178,6 +193,15 @@ func bmcOwnerRef() *metav1.OwnerReference {
 		APIVersion: clusterv1.GroupVersion.String(),
 		Kind:       "Cluster",
 		Name:       clusterName,
+	}
+}
+
+func m3mConsumerRef() *corev1.ObjectReference {
+	return &corev1.ObjectReference{
+		APIVersion: infrav1.GroupVersion.String(),
+		Kind:       metal3MachineKind,
+		Name:       metal3machineName,
+		Namespace:  namespaceName,
 	}
 }
 
@@ -404,8 +428,65 @@ func newBareMetalHost(bmhName string, spec *bmov1alpha1.BareMetalHostSpec,
 			"baremetalhost.metal3.io/paused": "",
 		}
 	}
-
 	return bmh
+}
+
+func newHostClaim(hostClaimName string, spec *bmov1alpha1.HostClaimSpec,
+	labels map[string]string, paused bool, bmhName string,
+) *bmov1alpha1.HostClaim {
+	if spec == nil {
+		spec = &bmov1alpha1.HostClaimSpec{}
+		spec.ConsumerRef = m3mConsumerRef()
+	}
+	hostclaim := &bmov1alpha1.HostClaim{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "HostClaim",
+			APIVersion: bmov1alpha1.GroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      hostClaimName,
+			Namespace: namespaceName,
+			UID:       hcuuid,
+		},
+
+		Spec: *spec,
+		Status: bmov1alpha1.HostClaimStatus{
+			HardwareData: &bmov1alpha1.ObjectReference{
+				Name:      bmhName,
+				Namespace: namespaceName,
+			},
+		},
+	}
+	if labels != nil {
+		hostclaim.ObjectMeta.Labels = labels
+	}
+	if paused {
+		hostclaim.ObjectMeta.Annotations = map[string]string{
+			"baremetalhost.metal3.io/paused": "",
+		}
+	}
+	return hostclaim
+}
+
+func newHardwareData(hardwareDataName string, labels map[string]string,
+) *bmov1alpha1.HardwareData {
+	hardwaredata := &bmov1alpha1.HardwareData{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "HardwareData",
+			APIVersion: bmov1alpha1.GroupVersion.String(),
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      hardwareDataName,
+			Namespace: namespaceName,
+			UID:       hwduuid,
+		},
+
+		Spec: bmov1alpha1.HardwareDataSpec{},
+	}
+	if labels != nil {
+		hardwaredata.ObjectMeta.Labels = labels
+	}
+	return hardwaredata
 }
 
 func testObjectMeta(name string, namespace string, uid string) metav1.ObjectMeta {

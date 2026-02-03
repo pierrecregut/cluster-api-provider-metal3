@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -36,12 +37,12 @@ import (
 	"sigs.k8s.io/cluster-api/controllers/clustercache"
 	"sigs.k8s.io/cluster-api/util"
 	"sigs.k8s.io/cluster-api/util/annotations"
-	"sigs.k8s.io/cluster-api/util/patch"
 	"sigs.k8s.io/cluster-api/util/predicates"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
 var (
@@ -60,10 +61,13 @@ type Metal3LabelSyncReconciler struct {
 	Log              logr.Logger
 	CapiClientGetter baremetal.ClientGetter
 	WatchFilterValue string
+	RemoteClients    baremetal.RemoteClientCacheInterface
 }
 
 // +kubebuilder:rbac:groups=metal3.io,resources=baremetalhosts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=metal3.io,resources=baremetalhosts/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=metal3.io,resources=hostclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=metal3.io,resources=hardwaredata,verbs=get;list;watch
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=metal3machines,verbs=get;list;watch
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=metal3machines/status,verbs=get
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch
@@ -74,10 +78,9 @@ type Metal3LabelSyncReconciler struct {
 func (r *Metal3LabelSyncReconciler) Reconcile(ctx context.Context, req ctrl.Request) (rres ctrl.Result, rerr error) {
 	reconcileStart := time.Now()
 	controllerLog := r.Log.WithName(labelSyncControllerName).WithValues(
-		baremetal.LogFieldBMH, req.NamespacedName,
+		baremetal.LogFieldMetal3Machine, req.NamespacedName,
 	)
 	controllerLog.V(baremetal.VerbosityLevelTrace).Info("Reconcile: starting label sync reconciliation")
-
 	// Record metrics at the end of reconciliation
 	defer func() {
 		hasError := rerr != nil
@@ -87,75 +90,17 @@ func (r *Metal3LabelSyncReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 	}()
 
-	// We need to get the NodeRef from the CAPI Machine object:
-	// BareMetalHost.ConsumerRef --> Metal3Machine.OwnerRef --> Machine.NodeRef
-
-	controllerLog.V(baremetal.VerbosityLevelTrace).Info("Fetching BareMetalHost")
-	host := &bmov1alpha1.BareMetalHost{}
-	if err := r.Client.Get(ctx, req.NamespacedName, host); err != nil {
-		if apierrors.IsNotFound(err) {
-			controllerLog.V(baremetal.VerbosityLevelDebug).Info("BareMetalHost not found, may have been deleted")
-			return ctrl.Result{}, nil
-		}
-		controllerLog.V(baremetal.VerbosityLevelDebug).Info("Failed to fetch BareMetalHost",
-			baremetal.LogFieldError, err.Error())
-		return ctrl.Result{}, err
-	}
-	controllerLog.V(baremetal.VerbosityLevelDebug).Info("BareMetalHost fetched",
-		"provisioningState", host.Status.Provisioning.State,
-		baremetal.LogFieldPoweredOn, host.Status.PoweredOn)
-
-	if host.Annotations != nil {
-		if _, ok := host.Annotations[bmov1alpha1.PausedAnnotation]; ok {
-			controllerLog.Info("BaremetalHost is currently paused. Remove pause to continue reconciliation.")
-			return ctrl.Result{RequeueAfter: bmhSyncInterval}, nil
-		}
-	}
-
-	controllerLog.V(baremetal.VerbosityLevelTrace).Info("Creating patch helper")
-	helper, err := patch.NewHelper(host, r.Client)
-	if err != nil {
-		return ctrl.Result{}, fmt.Errorf("failed to init patch helper: %w", err)
-	}
-	defer func() {
-		controllerLog.V(baremetal.VerbosityLevelTrace).Info("Patching BareMetalHost on exit")
-		err = helper.Patch(ctx, host)
-		if err != nil {
-			controllerLog.Info("Failed to Patch BareMetalHost")
-			rerr = err
-		}
-	}()
-
-	// Fetch the Metal3Machine instance.
-	controllerLog.V(baremetal.VerbosityLevelTrace).Info("Checking ConsumerRef")
-	if host.Spec.ConsumerRef == nil {
-		controllerLog.V(baremetal.VerbosityLevelDebug).Info("No ConsumerRef, skipping")
-		// ignore BMH with no ConsumerRef
-		return ctrl.Result{}, nil
-	}
-	if host.Spec.ConsumerRef.Kind != metal3MachineKind ||
-		host.Spec.ConsumerRef.GroupVersionKind().Group != infrav1.GroupVersion.Group {
-		controllerLog.Info("Unknown GroupVersionKind in BareMetalHost Consumer Ref", "groupversion", host.Spec.ConsumerRef.GroupVersionKind())
-		return ctrl.Result{}, nil
-	}
+	var hostLabels map[string]string
 
 	controllerLog.V(baremetal.VerbosityLevelTrace).Info("Fetching Metal3Machine from ConsumerRef")
 	capm3Machine := &infrav1.Metal3Machine{}
-	capm3MachineKey := client.ObjectKey{
-		Name:      host.Spec.ConsumerRef.Name,
-		Namespace: host.Spec.ConsumerRef.Namespace,
-	}
-	if err = r.Client.Get(ctx, capm3MachineKey, capm3Machine); err != nil {
+	if err := r.Client.Get(ctx, req.NamespacedName, capm3Machine); err != nil {
 		if apierrors.IsNotFound(err) {
-			controllerLog.Info("Could not find associated Metal3Machine for BareMetalHost, will retry",
-				baremetal.LogFieldMetal3Machine, capm3MachineKey,
-				baremetal.LogFieldHostNamespace, host.Namespace,
-				baremetal.LogFieldHost, host.Name)
+			controllerLog.Info("Could not find Metal3Machine, will retry")
 			return ctrl.Result{RequeueAfter: requeueAfter}, nil
 		}
 		return ctrl.Result{}, err
 	}
-	controllerLog = controllerLog.WithValues(baremetal.LogFieldMetal3Machine, capm3MachineKey.Name)
 	controllerLog.V(baremetal.VerbosityLevelTrace).Info("Found Metal3Machine")
 
 	// Fetch the Machine.
@@ -233,7 +178,104 @@ func (r *Metal3LabelSyncReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	controllerLog.V(baremetal.VerbosityLevelDebug).Info("Found prefix annotation",
 		"prefixes", prefixStr)
 
-	controllerLog.V(baremetal.VerbosityLevelTrace).Info("Parsing prefix annotation")
+	m3mAnnotations := capm3Machine.ObjectMeta.GetAnnotations()
+	if m3mAnnotations == nil {
+		return ctrl.Result{}, nil
+	}
+
+	controllerLog.V(baremetal.VerbosityLevelDebug).Info("Metal3Machine annotations", "m3m", m3mAnnotations)
+	if capm3Machine.Spec.HostSelector != nil && capm3Machine.Spec.HostSelector.HostClaim == infrav1.HostClaimEnabled {
+		hostClaimName, ok := m3mAnnotations[baremetal.HostClaimAnnotation]
+		if ok {
+			cl := r.Client
+			remoteClient, err2 := r.RemoteClients.GetRemoteClient(ctx, controllerLog, capm3Machine)
+			if err2 != nil {
+				controllerLog.Error(err2, "Cannot get client on remote host provisioner cluster")
+				return ctrl.Result{}, err2
+			}
+			hostClaimNamespace := capm3Machine.Namespace
+			if remoteClient != nil {
+				cl = remoteClient
+				hostClaimNamespace = remoteClient.Namespace
+			}
+			hostClaim := &bmov1alpha1.HostClaim{}
+			hostClaimKey := client.ObjectKey{Namespace: hostClaimNamespace, Name: hostClaimName}
+			err = cl.Get(ctx, hostClaimKey, hostClaim)
+			if apierrors.IsNotFound(err) {
+				controllerLog.V(baremetal.VerbosityLevelDebug).Info("Annotated hostclaim not found", baremetal.LogFieldHostClaim, hostClaimKey)
+				return ctrl.Result{}, nil
+			} else if err != nil {
+				return ctrl.Result{}, err
+			}
+
+			controllerLog.V(baremetal.VerbosityLevelDebug).Info("Hostclaim", baremetal.LogFieldName, hostClaim.Name, baremetal.LogFieldNamespace, hostClaim.Namespace, baremetal.LogFieldAnnotation,
+				hostClaim.Annotations, baremetal.LogFieldLabel, hostClaim.Labels)
+
+			if hostClaim.Annotations != nil {
+				if _, ok := hostClaim.Annotations[bmov1alpha1.PausedAnnotation]; ok {
+					controllerLog.V(baremetal.VerbosityLevelDebug).Info("Hostclaim is currently paused. Remove pause to continue reconciliation.")
+					return ctrl.Result{}, nil
+				}
+			}
+
+			if hostClaim.Status.HardwareData == nil {
+				controllerLog.V(baremetal.VerbosityLevelDebug).Info("HardwareData not present")
+				return ctrl.Result{}, nil
+			}
+			hardwareData := &bmov1alpha1.HardwareData{}
+			hardwareDataName := hostClaim.Status.HardwareData.Name
+			hardwareDataNamespace := hostClaim.Status.HardwareData.Namespace
+			hardwareDataKey := client.ObjectKey{Namespace: hardwareDataNamespace, Name: hardwareDataName}
+			err = cl.Get(ctx, hardwareDataKey, hardwareData)
+			if apierrors.IsNotFound(err) {
+				controllerLog.V(baremetal.VerbosityLevelDebug).Info("hardwaredata not found", "hardwareDataKey", hardwareDataKey)
+				return ctrl.Result{RequeueAfter: bmhSyncInterval}, nil
+			} else if err != nil {
+				return ctrl.Result{}, err
+			}
+
+			hostLabels = hardwareData.Labels
+			controllerLog.V(baremetal.VerbosityLevelDebug).Info("Hardwaredata labels", "name", hardwareDataName, "labels", hostLabels)
+			controllerLog.V(baremetal.VerbosityLevelDebug).Info("Synchronizing labels between hardwaredata and node")
+		} else {
+			return ctrl.Result{}, nil
+		}
+	} else {
+		bareMetalHostKey, ok := m3mAnnotations[baremetal.HostAnnotation]
+		if ok {
+			_, bareMetalHostName, err2 := cache.SplitMetaNamespaceKey(bareMetalHostKey)
+			if err2 != nil {
+				controllerLog.Error(err2, "Error parsing annotation value", "annotation key", bareMetalHostKey)
+				return ctrl.Result{}, err2
+			}
+
+			bareMetalHost := bmov1alpha1.BareMetalHost{}
+			key := client.ObjectKey{
+				Name:      bareMetalHostName,
+				Namespace: capm3Machine.Namespace,
+			}
+			err = r.Client.Get(ctx, key, &bareMetalHost)
+			if apierrors.IsNotFound(err) {
+				controllerLog.V(baremetal.VerbosityLevelDebug).Info("Annotated baremetalhost not found", "host", bareMetalHostKey)
+				return ctrl.Result{}, nil
+			} else if err != nil {
+				return ctrl.Result{}, err
+			}
+
+			if bareMetalHost.Annotations != nil {
+				if _, ok := bareMetalHost.Annotations[bmov1alpha1.PausedAnnotation]; ok {
+					controllerLog.V(baremetal.VerbosityLevelDebug).Info("BaremetalHost is currently paused. Remove pause to continue reconciliation.")
+					return ctrl.Result{RequeueAfter: bmhSyncInterval}, nil
+				}
+			}
+
+			hostLabels = bareMetalHost.Labels
+			controllerLog.V(baremetal.VerbosityLevelDebug).Info("Synchronizing labels between baremetalhost and node")
+		} else {
+			return ctrl.Result{}, nil
+		}
+	}
+
 	prefixSet, err := baremetal.ParsePrefixAnnotation(prefixStr)
 	if err != nil {
 		controllerLog.V(baremetal.VerbosityLevelDebug).Info("Failed to parse prefix annotation",
@@ -244,11 +286,10 @@ func (r *Metal3LabelSyncReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		baremetal.LogFieldCount, len(prefixSet))
 
 	controllerLog.V(baremetal.VerbosityLevelTrace).Info("Reconciling BMH labels to Node")
-	err = r.reconcileBMHLabels(ctx, host, capiMachine, cluster, prefixSet, controllerLog)
+	err = r.reconcileBMHLabels(ctx, hostLabels, capiMachine, cluster, prefixSet, controllerLog)
 	if err != nil {
 		controllerLog.V(baremetal.VerbosityLevelDebug).Info("Failed to reconcile labels",
 			baremetal.LogFieldError, err.Error())
-		controllerLog.Info(fmt.Sprintf("Error reconciling BMH labels to Node, will retry: %v", err))
 		return ctrl.Result{RequeueAfter: requeueAfter}, err
 	}
 	controllerLog.Info("Finished synchronizing labels between BaremetalHost and Node")
@@ -257,11 +298,10 @@ func (r *Metal3LabelSyncReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{RequeueAfter: bmhSyncInterval}, nil
 }
 
-func (r *Metal3LabelSyncReconciler) reconcileBMHLabels(ctx context.Context, host *bmov1alpha1.BareMetalHost, machine *clusterv1.Machine, cluster *clusterv1.Cluster, prefixSet map[string]struct{}, log logr.Logger) error {
+func (r *Metal3LabelSyncReconciler) reconcileBMHLabels(ctx context.Context, hostLabels map[string]string, machine *clusterv1.Machine, cluster *clusterv1.Cluster, prefixSet map[string]struct{}, log logr.Logger) error {
 	log.V(baremetal.VerbosityLevelTrace).Info("reconcileBMHLabels: starting label synchronization")
-
 	log.V(baremetal.VerbosityLevelTrace).Info("Building host label sync set")
-	hostLabelSyncSet := buildLabelSyncSet(prefixSet, host.Labels)
+	hostLabelSyncSet := buildLabelSyncSet(prefixSet, hostLabels)
 	log.V(baremetal.VerbosityLevelDebug).Info("Host label sync set built",
 		baremetal.LogFieldCount, len(hostLabelSyncSet))
 
@@ -334,25 +374,93 @@ func synchronizeLabelSyncSetsOnNode(hostLabelSyncSet, nodeLabelSyncSet map[strin
 
 // SetupWithManager will add watches for this controller.
 func (r *Metal3LabelSyncReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
+	if r.RemoteClients == nil {
+		return errors.New("remoteClients must not be nil")
+	}
+	src := source.Channel(r.RemoteClients.GetWatchChannel(), handler.EnqueueRequestsFromMapFunc(r.HostClaimToMetal3Machines))
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&bmov1alpha1.BareMetalHost{}).
+		Named("labelsync-controller").
+		For(&infrav1.Metal3Machine{}).
 		WithOptions(options).
 		Watches(
 			&infrav1.Metal3Cluster{},
-			handler.EnqueueRequestsFromMapFunc(r.Metal3ClusterToBareMetalHosts),
+			handler.EnqueueRequestsFromMapFunc(r.Metal3ClusterToMetal3Machine),
 		).
+		Watches(
+			&bmov1alpha1.HostClaim{},
+			handler.EnqueueRequestsFromMapFunc(r.HostClaimToMetal3Machines),
+		).
+		Watches(
+			&bmov1alpha1.BareMetalHost{},
+			handler.EnqueueRequestsFromMapFunc(r.BareMetalHostToMetal3Machines),
+		).
+		WatchesRawSource(src).
 		WithEventFilter(predicates.ResourceNotPausedAndHasFilterLabel(mgr.GetScheme(), ctrl.LoggerFrom(ctx), r.WatchFilterValue)).
 		Complete(r)
 }
 
-// Metal3ClusterToBareMetalHosts is a handler.ToRequestsFunc to be used to enqeue
+// BareMetalHostToMetal3Machines will return a reconcile request for a Metal3Machine if the event is for a
+// BareMetalHost and that BareMetalHost references a Metal3Machine.
+func (r *Metal3LabelSyncReconciler) BareMetalHostToMetal3Machines(_ context.Context, obj client.Object) []ctrl.Request {
+	if host, ok := obj.(*bmov1alpha1.BareMetalHost); ok {
+		log := r.Log.WithValues(baremetal.LogFieldBMH, host.Name, baremetal.LogFieldNamespace, host.Namespace)
+		if host.Spec.ConsumerRef != nil &&
+			host.Spec.ConsumerRef.Kind == metal3MachineKind &&
+			host.Spec.ConsumerRef.Namespace == host.Namespace && // bmh and m3m must be in same namespace
+			host.Spec.ConsumerRef.GroupVersionKind().Group == infrav1.GroupVersion.Group {
+			log.V(baremetal.VerbosityLevelTrace).Info("found baremetalhost, enqueuing request", baremetal.LogFieldMetal3Machine, host.Spec.ConsumerRef.Name)
+			return metal3MachinesRequest(host.Spec.ConsumerRef)
+		}
+	} else {
+		r.Log.Error(fmt.Errorf("expected a BareMetalHost but got a %T", obj),
+			"failed to get Metal3Machine for BareMetalHost",
+		)
+	}
+	return []ctrl.Request{}
+}
+
+// HostClaimToMetal3Machines will return a reconcile request for a Metal3Machine if the event is for a
+// local HostClaim and that HostClaim references a Metal3Machine.
+func (r *Metal3LabelSyncReconciler) HostClaimToMetal3Machines(_ context.Context, obj client.Object) []ctrl.Request {
+	if host, ok := obj.(*bmov1alpha1.HostClaim); ok {
+		log := r.Log.WithValues(baremetal.LogFieldHostClaim, host.Name, baremetal.LogFieldHostClaimNamespace, host.Namespace)
+		if host.Spec.ConsumerRef != nil &&
+			(host.Spec.ConsumerRef.Kind == metal3MachineKind || host.Spec.ConsumerRef.Kind == remoteMetal3MachineKind) &&
+			host.Spec.ConsumerRef.GroupVersionKind().Group == infrav1.GroupVersion.Group {
+			log.V(baremetal.VerbosityLevelTrace).Info("found hostclaim, enqueuing request", baremetal.LogFieldMetal3Machine, host.Spec.ConsumerRef.Name,
+				baremetal.LogFieldNamespace, host.Spec.ConsumerRef.Namespace)
+			return metal3MachinesRequest(host.Spec.ConsumerRef)
+		}
+	} else {
+		r.Log.Error(fmt.Errorf("expected a HostClaim but got a %T", obj),
+			"failed to get Metal3Machine for HostClaim",
+		)
+	}
+	return []ctrl.Request{}
+}
+
+// metal3MachinesRequest will return a reconcile request for a Metal3Machine
+// defined with name and namespace from a consumerRef object.
+func metal3MachinesRequest(consumerRef *corev1.ObjectReference) []ctrl.Request {
+	m3mObjKey := client.ObjectKey{
+		Name:      consumerRef.Name,
+		Namespace: consumerRef.Namespace,
+	}
+	return []ctrl.Request{
+		{
+			NamespacedName: m3mObjKey,
+		},
+	}
+}
+
+// Metal3ClusterToMetal3Machine is a handler.ToRequestsFunc to be used to enqueue
 // requests for reconciliation of BareMetalHosts' label updates.
-func (r *Metal3LabelSyncReconciler) Metal3ClusterToBareMetalHosts(ctx context.Context, o client.Object) []ctrl.Request {
+func (r *Metal3LabelSyncReconciler) Metal3ClusterToMetal3Machine(ctx context.Context, o client.Object) []ctrl.Request {
 	result := []ctrl.Request{}
 	c, ok := o.(*infrav1.Metal3Cluster)
 	if !ok {
 		r.Log.Error(fmt.Errorf("expected a Metal3Cluster but got a %T", o),
-			"failed to get BareMetalHost for Metal3Cluster",
+			"failed to get Metal3Mahine for Metal3Cluster",
 		)
 		return nil
 	}
@@ -379,38 +487,13 @@ func (r *Metal3LabelSyncReconciler) Metal3ClusterToBareMetalHosts(ctx context.Co
 		if m.Spec.InfrastructureRef.Name == "" {
 			continue
 		}
-		name := client.ObjectKey{Namespace: m.Namespace, Name: m.Spec.InfrastructureRef.Name}
-		if m.Namespace != "" {
-			name = client.ObjectKey{Namespace: m.Namespace, Name: m.Spec.InfrastructureRef.Name}
+
+		m3mObjKey := client.ObjectKey{
+			Name:      m.Spec.InfrastructureRef.Name,
+			Namespace: m.Namespace,
 		}
-		capm3Machine := &infrav1.Metal3Machine{}
-		if err := r.Client.Get(ctx, name, capm3Machine); err != nil {
-			log.Error(err, "failed to get Metal3Machine")
-			continue
-		}
-		annotations := capm3Machine.ObjectMeta.GetAnnotations()
-		if annotations == nil {
-			log.Error(fmt.Errorf("no annotations found on Metal3Machine: %v", name), "failed to get annotations in Metal3Machine")
-			continue
-		}
-		hostKey, ok := annotations[baremetal.HostAnnotation]
-		if !ok {
-			log.Error(fmt.Errorf("no %v annotation on Metal3Machine: %v", baremetal.HostAnnotation, name), "failed to get BareMetalHost annotation in Metal3Machine")
-			continue
-		}
-		// The namespace prefix is ignored; the Metal3Machine's own namespace is always used
-		// to prevent cross-namespace BareMetalHost references regardless of annotation content.
-		_, hostName, err := cache.SplitMetaNamespaceKey(hostKey)
-		if err != nil {
-			log.Error(err, "could not parse host annotation")
-			continue
-		}
-		hostObjKey := client.ObjectKey{
-			Name:      hostName,
-			Namespace: capm3Machine.Namespace,
-		}
-		log.V(baremetal.VerbosityLevelTrace).Info("found BareMetalHost", "name", hostObjKey)
-		result = append(result, ctrl.Request{NamespacedName: hostObjKey})
+		log.V(baremetal.VerbosityLevelTrace).Info("found Metal3Machine, enqueuing request", "name", m3mObjKey)
+		result = append(result, ctrl.Request{NamespacedName: m3mObjKey})
 	}
 	return result
 }

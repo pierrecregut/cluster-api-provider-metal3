@@ -553,6 +553,7 @@ func setupReconcilers(ctx context.Context, mgr ctrl.Manager) {
 		ManagerFactory:   baremetal.NewManagerFactory(mgr.GetClient(), rcc),
 		Log:              ctrl.Log.WithName("controllers").WithName("Metal3LabelSync"),
 		CapiClientGetter: infraremote.NewClusterClient,
+		RemoteClients:    managerFactory.GetRemoteClientCache(),
 	}).SetupWithManager(ctx, mgr, concurrency(metal3LabelSyncConcurrency)); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Metal3LabelSyncReconciler")
 		os.Exit(1)
