@@ -287,7 +287,7 @@ var _ = Describe("Metal3Data manager", func() {
 
 				dataReconcile := &Metal3DataReconciler{
 					Client:           fakeClient,
-					ManagerFactory:   baremetal.NewManagerFactory(fakeClient),
+					ManagerFactory:   baremetal.NewManagerFactory(fakeClient, nil),
 					Log:              logr.Discard(),
 					WatchFilterValue: "",
 				}
@@ -349,7 +349,7 @@ var _ = Describe("Metal3Data manager", func() {
 
 			dataReconcile := &Metal3DataReconciler{
 				Client:           fakeClient,
-				ManagerFactory:   baremetal.NewManagerFactory(fakeClient),
+				ManagerFactory:   baremetal.NewManagerFactory(fakeClient, nil),
 				Log:              logr.Discard(),
 				WatchFilterValue: "",
 			}

@@ -222,7 +222,7 @@ var _ = Describe("Metal3Machine manager", func() {
 
 			bmReconcile = &Metal3MachineReconciler{
 				Client:           fakeClient,
-				ManagerFactory:   baremetal.NewManagerFactory(fakeClient),
+				ManagerFactory:   baremetal.NewManagerFactory(fakeClient, nil),
 				Log:              logr.Discard(),
 				CapiClientGetter: nil,
 				WatchFilterValue: "",
@@ -349,7 +349,7 @@ var _ = Describe("Metal3Machine manager", func() {
 
 			bmReconcile = &Metal3MachineReconciler{
 				Client:           fakeClient,
-				ManagerFactory:   baremetal.NewManagerFactory(fakeClient),
+				ManagerFactory:   baremetal.NewManagerFactory(fakeClient, nil),
 				Log:              logr.Discard(),
 				CapiClientGetter: nil,
 				WatchFilterValue: "",
@@ -530,6 +530,123 @@ var _ = Describe("Metal3Machine manager", func() {
 					Spec: bmov1alpha1.BareMetalHostSpec{},
 				},
 				ExpectRequest: false,
+			},
+		),
+	)
+
+	type TestCaseHostClaimToM3M struct {
+		Obj           client.Object
+		ExpectRequest bool
+	}
+
+	hostClaimWithConsumer := func(kind, apiVersion string) *bmov1alpha1.HostClaim {
+		return &bmov1alpha1.HostClaim{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "claim1",
+				Namespace: namespaceName,
+			},
+			Spec: bmov1alpha1.HostClaimSpec{
+				ConsumerRef: &corev1.ObjectReference{
+					Name:       "m3m-1",
+					Namespace:  namespaceName,
+					Kind:       kind,
+					APIVersion: apiVersion,
+				},
+			},
+		}
+	}
+
+	DescribeTable("HostClaim To Metal3Machines (local)",
+		func(tc TestCaseHostClaimToM3M) {
+			r := Metal3MachineReconciler{Log: logr.Discard()}
+			reqs := r.HostClaimToMetal3Machines(context.Background(), tc.Obj)
+			if tc.ExpectRequest {
+				host, ok := tc.Obj.(*bmov1alpha1.HostClaim)
+				Expect(ok).To(BeTrue())
+				Expect(reqs).To(HaveLen(1))
+				Expect(reqs[0].NamespacedName.Name).To(Equal(host.Spec.ConsumerRef.Name))
+				Expect(reqs[0].NamespacedName.Namespace).To(Equal(host.Spec.ConsumerRef.Namespace))
+			} else {
+				Expect(reqs).To(BeEmpty())
+			}
+		},
+		Entry("ConsumerRef on Metal3Machine enqueues the owning machine",
+			TestCaseHostClaimToM3M{
+				Obj:           hostClaimWithConsumer(metal3MachineKind, infrav1.GroupVersion.String()),
+				ExpectRequest: true,
+			},
+		),
+		Entry("Other version, succcess",
+			TestCaseHostClaimToM3M{
+				Obj:           hostClaimWithConsumer(metal3MachineKind, infrav1.GroupVersion.Group+"/v1blah"),
+				ExpectRequest: true,
+			},
+		),
+		Entry("Wrong kind (especially RemoteMetal3Machine), ignored",
+			TestCaseHostClaimToM3M{
+				Obj:           hostClaimWithConsumer(remoteMetal3MachineKind, infrav1.GroupVersion.String()),
+				ExpectRequest: false,
+			},
+		),
+		Entry("No ConsumerRef is ignored",
+			TestCaseHostClaimToM3M{
+				Obj: &bmov1alpha1.HostClaim{
+					ObjectMeta: metav1.ObjectMeta{Name: "claim1", Namespace: namespaceName},
+				},
+				ExpectRequest: false,
+			},
+		),
+	)
+
+	DescribeTable("HostClaim To Metal3Machines (remote)",
+		func(tc TestCaseHostClaimToM3M) {
+			r := Metal3MachineReconciler{Log: logr.Discard()}
+			reqs := r.RemoteHostClaimToMetal3Machines(context.Background(), tc.Obj)
+			if tc.ExpectRequest {
+				host, ok := tc.Obj.(*bmov1alpha1.HostClaim)
+				Expect(ok).To(BeTrue())
+				Expect(reqs).To(HaveLen(1))
+				Expect(reqs[0].NamespacedName.Name).To(Equal(host.Spec.ConsumerRef.Name))
+				Expect(reqs[0].NamespacedName.Namespace).To(Equal(host.Spec.ConsumerRef.Namespace))
+			} else {
+				Expect(reqs).To(BeEmpty())
+			}
+		},
+		Entry("RemoteMetal3Machine kind ConsumerRef enqueues the owning machine",
+			TestCaseHostClaimToM3M{
+				Obj:           hostClaimWithConsumer(remoteMetal3MachineKind, infrav1.GroupVersion.String()),
+				ExpectRequest: true,
+			},
+		),
+		Entry("Other version, success",
+			TestCaseHostClaimToM3M{
+				Obj:           hostClaimWithConsumer(remoteMetal3MachineKind, infrav1.GroupVersion.Group+"/v1blah"),
+				ExpectRequest: true,
+			},
+		),
+		Entry("Wrong kind (especially local metal3 machine), ignored",
+			TestCaseHostClaimToM3M{
+				Obj:           hostClaimWithConsumer(metal3MachineKind, infrav1.GroupVersion.String()),
+				ExpectRequest: false,
+			},
+		),
+		Entry("Wrong group, ignored",
+			TestCaseHostClaimToM3M{
+				Obj:           hostClaimWithConsumer(remoteMetal3MachineKind, "other.group/v1"),
+				ExpectRequest: false,
+			},
+		),
+		Entry("No ConsumerRef, ignored",
+			TestCaseHostClaimToM3M{
+				Obj: &bmov1alpha1.HostClaim{
+					ObjectMeta: metav1.ObjectMeta{Name: "claim1", Namespace: namespaceName},
+				},
+				ExpectRequest: false,
+			},
+		),
+		Entry("Bad object, ignored",
+			TestCaseHostClaimToM3M{
+				Obj: &bmov1alpha1.BareMetalHost{},
 			},
 		),
 	)

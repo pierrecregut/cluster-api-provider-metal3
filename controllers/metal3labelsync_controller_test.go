@@ -401,7 +401,7 @@ var _ = Describe("Metal3LabelSync controller", func() {
 				}}).CoreV1()
 				r := &Metal3LabelSyncReconciler{
 					Client:         fakeClient,
-					ManagerFactory: baremetal.NewManagerFactory(fakeClient),
+					ManagerFactory: baremetal.NewManagerFactory(fakeClient, nil),
 					Log:            logr.Discard(),
 					CapiClientGetter: func(_ context.Context, _ client.Client, _ *clusterv1.Cluster) (
 						clientcorev1.CoreV1Interface, error,
@@ -542,7 +542,7 @@ var _ = Describe("Metal3LabelSync controller", func() {
 				}}).CoreV1()
 				r := &Metal3LabelSyncReconciler{
 					Client:         fakeClient,
-					ManagerFactory: baremetal.NewManagerFactory(fakeClient),
+					ManagerFactory: baremetal.NewManagerFactory(fakeClient, nil),
 					Log:            logr.Discard(),
 					CapiClientGetter: func(_ context.Context, _ client.Client, _ *clusterv1.Cluster) (
 						clientcorev1.CoreV1Interface, error,

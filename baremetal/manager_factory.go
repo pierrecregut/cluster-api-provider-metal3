@@ -17,6 +17,9 @@ limitations under the License.
 package baremetal
 
 import (
+	"context"
+	"errors"
+
 	"github.com/go-logr/logr"
 	infrav1 "github.com/metal3-io/cluster-api-provider-metal3/api/v1beta2"
 	capm3remote "github.com/metal3-io/cluster-api-provider-metal3/baremetal/remote"
@@ -30,7 +33,7 @@ type ManagerFactoryInterface interface {
 		metal3Cluster *infrav1.Metal3Cluster,
 		clusterLog logr.Logger,
 	) (ClusterManagerInterface, error)
-	NewMachineManager(*clusterv1.Cluster, *infrav1.Metal3Cluster, *clusterv1.Machine,
+	NewMachineManager(context.Context, *clusterv1.Cluster, *infrav1.Metal3Cluster, *clusterv1.Machine,
 		*infrav1.Metal3Machine, logr.Logger,
 	) (MachineManagerInterface, error)
 	NewDataTemplateManager(*infrav1.Metal3DataTemplate, logr.Logger) (
@@ -46,16 +49,22 @@ type ManagerFactoryInterface interface {
 	NewRemediationManager(*infrav1.Metal3Remediation, *infrav1.Metal3Machine, *clusterv1.Machine, logr.Logger) (
 		RemediationManagerInterface, error,
 	)
+	GetRemoteClientCache() RemoteClientCacheInterface
 }
 
 // ManagerFactory only contains a client.
 type ManagerFactory struct {
-	client client.Client
+	client            client.Client
+	remoteClientCache RemoteClientCacheInterface
 }
 
 // NewManagerFactory returns a new factory.
-func NewManagerFactory(client client.Client) ManagerFactory {
-	return ManagerFactory{client: client}
+func NewManagerFactory(client client.Client, remoteClientCache RemoteClientCacheInterface) ManagerFactory {
+	return ManagerFactory{client: client, remoteClientCache: remoteClientCache}
+}
+
+func (f ManagerFactory) GetRemoteClientCache() RemoteClientCacheInterface {
+	return f.remoteClientCache
 }
 
 // NewClusterManager creates a new ClusterManager.
@@ -64,10 +73,17 @@ func (f ManagerFactory) NewClusterManager(cluster *clusterv1.Cluster, capm3Clust
 }
 
 // NewMachineManager creates a new MachineManager.
-func (f ManagerFactory) NewMachineManager(capiCluster *clusterv1.Cluster,
-	capm3Cluster *infrav1.Metal3Cluster,
+func (f ManagerFactory) NewMachineManager(ctx context.Context,
+	capiCluster *clusterv1.Cluster, capm3Cluster *infrav1.Metal3Cluster,
 	capiMachine *clusterv1.Machine, capm3Machine *infrav1.Metal3Machine,
 	machineLog logr.Logger) (MachineManagerInterface, error) {
+	if capm3Machine.Spec.HostSelector != nil && capm3Machine.Spec.HostSelector.HostClaim == infrav1.HostClaimEnabled {
+		if f.remoteClientCache == nil {
+			return nil, errors.New("remote client cache necessary for HostClaim mode")
+		}
+		return NewMachineHostClaimManager(ctx, f.client, f.remoteClientCache, capiCluster, capm3Cluster,
+			capiMachine, capm3Machine, machineLog)
+	}
 	return NewMachineManager(f.client, capiCluster, capm3Cluster, capiMachine,
 		capm3Machine, machineLog)
 }

@@ -228,7 +228,7 @@ var _ = Describe("Reconcile metal3machine", func() {
 
 			r := &Metal3MachineReconciler{
 				Client:           fakeClient,
-				ManagerFactory:   baremetal.NewManagerFactory(fakeClient),
+				ManagerFactory:   baremetal.NewManagerFactory(fakeClient, nil),
 				Log:              logr.Discard(),
 				CapiClientGetter: mockCapiClientGetter,
 				WatchFilterValue: "",

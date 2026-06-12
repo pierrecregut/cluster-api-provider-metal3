@@ -49,7 +49,7 @@ var _ = Describe("Reconcile metal3Cluster", func() {
 
 			r := &Metal3ClusterReconciler{
 				Client:           fakeClient,
-				ManagerFactory:   baremetal.NewManagerFactory(fakeClient),
+				ManagerFactory:   baremetal.NewManagerFactory(fakeClient, nil),
 				Log:              logr.Discard(),
 				WatchFilterValue: "",
 			}

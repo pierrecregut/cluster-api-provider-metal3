@@ -186,7 +186,7 @@ var _ = Describe("Metal3DataTemplate manager", func() {
 
 			r := &Metal3DataTemplateReconciler{
 				Client:           fakeClient,
-				ManagerFactory:   baremetal.NewManagerFactory(fakeClient),
+				ManagerFactory:   baremetal.NewManagerFactory(fakeClient, nil),
 				Log:              logr.Discard(),
 				WatchFilterValue: "",
 			}
@@ -240,7 +240,7 @@ var _ = Describe("Metal3DataTemplate manager", func() {
 
 			r := &Metal3DataTemplateReconciler{
 				Client:           fakeClient,
-				ManagerFactory:   baremetal.NewManagerFactory(fakeClient),
+				ManagerFactory:   baremetal.NewManagerFactory(fakeClient, nil),
 				Log:              logr.Discard(),
 				WatchFilterValue: "",
 			}

@@ -291,7 +291,7 @@ var _ = Describe("Metal3Remediation controller", func() {
 			}
 			testReconciler = &Metal3RemediationReconciler{
 				Client:         fakeClient,
-				ManagerFactory: baremetal.NewManagerFactory(fakeClient),
+				ManagerFactory: baremetal.NewManagerFactory(fakeClient, nil),
 				Log:            logr.Discard(),
 			}
 			_, err := testReconciler.Reconcile(context.TODO(), tc.TestRequest)
@@ -363,7 +363,7 @@ var _ = Describe("Metal3Remediation controller", func() {
 		fakeClient := fake.NewClientBuilder().WithScheme(setupScheme()).Build()
 		testReconciler = &Metal3RemediationReconciler{
 			Client:                     fakeClient,
-			ManagerFactory:             baremetal.NewManagerFactory(fakeClient),
+			ManagerFactory:             baremetal.NewManagerFactory(fakeClient, nil),
 			Log:                        logr.Discard(),
 			IsOutOfServiceTaintEnabled: tc.IsOutOfServiceTaintSupported,
 		}

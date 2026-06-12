@@ -500,10 +500,11 @@ func setupReconcilers(ctx context.Context, mgr ctrl.Manager) {
 		setupLog.Error(err, "Cannot setup the HostClaim RemoteClientCache")
 		os.Exit(1)
 	}
+	managerFactory := baremetal.NewManagerFactory(mgr.GetClient(), rcc)
 	if err = (&controllers.Metal3MachineReconciler{
 		Client:           mgr.GetClient(),
 		ClusterCache:     clusterCache,
-		ManagerFactory:   baremetal.NewManagerFactory(mgr.GetClient()),
+		ManagerFactory:   managerFactory,
 		Log:              ctrl.Log.WithName("controllers").WithName("Metal3Machine"),
 		CapiClientGetter: infraremote.NewClusterClient,
 		WatchFilterValue: watchFilterValue,
@@ -515,7 +516,7 @@ func setupReconcilers(ctx context.Context, mgr ctrl.Manager) {
 	if err = (&controllers.Metal3ClusterReconciler{
 		Client:           mgr.GetClient(),
 		ClusterCache:     clusterCache,
-		ManagerFactory:   baremetal.NewManagerFactory(mgr.GetClient()),
+		ManagerFactory:   baremetal.NewManagerFactory(mgr.GetClient(), rcc),
 		Log:              ctrl.Log.WithName("controllers").WithName("Metal3Cluster"),
 		WatchFilterValue: watchFilterValue,
 	}).SetupWithManager(ctx, mgr, concurrency(metal3ClusterConcurrency)); err != nil {
@@ -526,7 +527,7 @@ func setupReconcilers(ctx context.Context, mgr ctrl.Manager) {
 	if err = (&controllers.Metal3DataTemplateReconciler{
 		Client:           mgr.GetClient(),
 		ClusterCache:     clusterCache,
-		ManagerFactory:   baremetal.NewManagerFactory(mgr.GetClient()),
+		ManagerFactory:   baremetal.NewManagerFactory(mgr.GetClient(), rcc),
 		Log:              ctrl.Log.WithName("controllers").WithName("Metal3DataTemplate"),
 		WatchFilterValue: watchFilterValue,
 	}).SetupWithManager(ctx, mgr, concurrency(metal3DataTemplateConcurrency)); err != nil {
@@ -538,7 +539,7 @@ func setupReconcilers(ctx context.Context, mgr ctrl.Manager) {
 		Client:           mgr.GetClient(),
 		ClientReader:     mgr.GetAPIReader(),
 		ClusterCache:     clusterCache,
-		ManagerFactory:   baremetal.NewManagerFactory(mgr.GetClient()),
+		ManagerFactory:   baremetal.NewManagerFactory(mgr.GetClient(), rcc),
 		Log:              ctrl.Log.WithName("controllers").WithName("Metal3Data"),
 		WatchFilterValue: watchFilterValue,
 	}).SetupWithManager(ctx, mgr, concurrency(metal3DataConcurrency)); err != nil {
@@ -549,7 +550,7 @@ func setupReconcilers(ctx context.Context, mgr ctrl.Manager) {
 	if err = (&controllers.Metal3LabelSyncReconciler{
 		Client:           mgr.GetClient(),
 		ClusterCache:     clusterCache,
-		ManagerFactory:   baremetal.NewManagerFactory(mgr.GetClient()),
+		ManagerFactory:   baremetal.NewManagerFactory(mgr.GetClient(), rcc),
 		Log:              ctrl.Log.WithName("controllers").WithName("Metal3LabelSync"),
 		CapiClientGetter: infraremote.NewClusterClient,
 	}).SetupWithManager(ctx, mgr, concurrency(metal3LabelSyncConcurrency)); err != nil {
@@ -560,7 +561,7 @@ func setupReconcilers(ctx context.Context, mgr ctrl.Manager) {
 	if err = (&controllers.Metal3MachineTemplateReconciler{
 		Client:         mgr.GetClient(),
 		ClusterCache:   clusterCache,
-		ManagerFactory: baremetal.NewManagerFactory(mgr.GetClient()),
+		ManagerFactory: baremetal.NewManagerFactory(mgr.GetClient(), rcc),
 		Log:            ctrl.Log.WithName("controllers").WithName("Metal3MachineTemplate"),
 	}).SetupWithManager(ctx, mgr, concurrency(metal3MachineTemplateConcurrency)); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Metal3MachineTemplateReconciler")
@@ -574,7 +575,7 @@ func setupReconcilers(ctx context.Context, mgr ctrl.Manager) {
 	if err := (&controllers.Metal3RemediationReconciler{
 		Client:                     mgr.GetClient(),
 		ClusterCache:               clusterCache,
-		ManagerFactory:             baremetal.NewManagerFactory(mgr.GetClient()),
+		ManagerFactory:             baremetal.NewManagerFactory(mgr.GetClient(), rcc),
 		Log:                        ctrl.Log.WithName("controllers").WithName("Metal3Remediation"),
 		IsOutOfServiceTaintEnabled: isOOSTSupported,
 	}).SetupWithManager(ctx, mgr, concurrency(metal3RemediationConcurrency)); err != nil {

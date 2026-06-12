@@ -47,12 +47,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
 const (
 	machineControllerName = metrics.ControllerMetal3Machine
 	// metal3MachineKind is the Kind of the Metal3Machine.
 	metal3MachineKind = "Metal3Machine"
+	// Kind used in consumeRef by metal3Machine on another cluster.
+	remoteMetal3MachineKind = "RemoteMetal3Machine"
 )
 
 // Metal3MachineReconciler reconciles a Metal3Machine object.
@@ -82,6 +85,8 @@ type Metal3MachineReconciler struct {
 // Add RBAC rules to access cluster-api resources
 // +kubebuilder:rbac:groups=metal3.io,resources=baremetalhosts,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=metal3.io,resources=baremetalhosts/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=metal3.io,resources=hostclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=metal3.io,resources=hostclaims/status,verbs=get;update;patch
 
 // Reconcile handles Metal3Machine events.
 func (r *Metal3MachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (rres ctrl.Result, rerr error) {
@@ -237,7 +242,7 @@ func (r *Metal3MachineReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		"metal3ClusterReady", ptr.Deref(metal3Cluster.Status.Initialization.Provisioned, false))
 
 	// Create a helper for managing the baremetal container hosting the machine.
-	machineMgr, err := r.ManagerFactory.NewMachineManager(cluster, metal3Cluster, capiMachine, capm3Machine, machineLog)
+	machineMgr, err := r.ManagerFactory.NewMachineManager(ctx, cluster, metal3Cluster, capiMachine, capm3Machine, machineLog)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("failed to create helper for managing the machineMgr: %w", err)
 	}
@@ -676,6 +681,8 @@ func (r *Metal3MachineReconciler) reconcileDelete(ctx context.Context,
 
 // SetupWithManager will add watches for this controller.
 func (r *Metal3MachineReconciler) SetupWithManager(ctx context.Context, mgr ctrl.Manager, options controller.Options) error {
+	rcc := r.ManagerFactory.GetRemoteClientCache()
+	src := source.Channel(rcc.GetWatchChannel(), handler.EnqueueRequestsFromMapFunc(r.RemoteHostClaimToMetal3Machines))
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&infrav1.Metal3Machine{}).
 		WithOptions(options).
@@ -704,6 +711,11 @@ func (r *Metal3MachineReconciler) SetupWithManager(ctx context.Context, mgr ctrl
 			&bmov1alpha1.BareMetalHost{},
 			handler.EnqueueRequestsFromMapFunc(r.BareMetalHostToMetal3Machines),
 		).
+		Watches(
+			&bmov1alpha1.HostClaim{},
+			handler.EnqueueRequestsFromMapFunc(r.HostClaimToMetal3Machines),
+		).
+		WatchesRawSource(src).
 		Complete(r)
 }
 
@@ -875,6 +887,54 @@ func (r *Metal3MachineReconciler) Metal3DataToMetal3Machines(_ context.Context, 
 		)
 	}
 	return requests
+}
+
+// HostClaimToMetal3Machines will return a reconcile request for a Metal3Machine if the event is for a
+// local HostClaim and that HostClaim references a Metal3Machine.
+func (r *Metal3MachineReconciler) HostClaimToMetal3Machines(_ context.Context, obj client.Object) []ctrl.Request {
+	if hostclaim, ok := obj.(*bmov1alpha1.HostClaim); ok {
+		if hostclaim.Spec.ConsumerRef != nil &&
+			hostclaim.Spec.ConsumerRef.Kind == metal3MachineKind &&
+			hostclaim.Spec.ConsumerRef.GroupVersionKind().Group == infrav1.GroupVersion.Group {
+			return []ctrl.Request{
+				{
+					NamespacedName: types.NamespacedName{
+						Name:      hostclaim.Spec.ConsumerRef.Name,
+						Namespace: hostclaim.Spec.ConsumerRef.Namespace,
+					},
+				},
+			}
+		}
+	} else {
+		r.Log.Error(fmt.Errorf("expected a HostClaim but got a %T", obj),
+			"failed to get Metal3Machine for local HostClaim",
+		)
+	}
+	return []ctrl.Request{}
+}
+
+// RemoteHostClaimToMetal3Machines will return a reconcile request for a Metal3Machine if the event is for a
+// remote HostClaim and that HostClaim references a Metal3Machine.
+func (r *Metal3MachineReconciler) RemoteHostClaimToMetal3Machines(_ context.Context, obj client.Object) []ctrl.Request {
+	if hostclaim, ok := obj.(*bmov1alpha1.HostClaim); ok {
+		if hostclaim.Spec.ConsumerRef != nil &&
+			hostclaim.Spec.ConsumerRef.Kind == remoteMetal3MachineKind &&
+			hostclaim.Spec.ConsumerRef.GroupVersionKind().Group == infrav1.GroupVersion.Group {
+			return []ctrl.Request{
+				{
+					NamespacedName: types.NamespacedName{
+						Name:      hostclaim.Spec.ConsumerRef.Name,
+						Namespace: hostclaim.Spec.ConsumerRef.Namespace,
+					},
+				},
+			}
+		}
+	} else {
+		r.Log.Error(fmt.Errorf("expected a HostClaim but got a %T", obj),
+			"failed to get Metal3Machine for remote HostClaim",
+		)
+	}
+	return []ctrl.Request{}
 }
 
 // setErrorM3Machine sets the ErrorMessage and ErrorReason fields on the metal3machine.
