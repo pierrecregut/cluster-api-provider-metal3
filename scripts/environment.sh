@@ -20,10 +20,13 @@ os_check
 
 if [[ "${OS}" == ubuntu ]]; then
   export IMAGE_OS="ubuntu"
+  export K8S_CR="containerd"
 elif [[ "${OS}" == centos ]]; then
   export IMAGE_OS="centos"
+  export K8S_CR="cri-o"
 elif [[ "${OS}" == "opensuse-leap" ]]; then
   export IMAGE_OS="leap"
+  export K8S_CR="cri-o"
 fi
 
 export CONTAINER_RUNTIME="docker"

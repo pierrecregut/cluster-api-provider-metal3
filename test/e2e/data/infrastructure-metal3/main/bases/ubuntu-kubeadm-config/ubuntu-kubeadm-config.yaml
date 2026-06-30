@@ -8,6 +8,14 @@ spec:
   kubeadmConfigSpec:
     files:
     - content: |
+        [Service]
+        Environment="HTTP_PROXY=${HTTP_PROXY}"
+        Environment="HTTPS_PROXY=${HTTPS_PROXY}"
+        Environment="NO_PROXY=${NO_PROXY}"
+      owner: root:root
+      path: "${DROPIN_FOLDER}/proxy.conf"
+      permissions: "0755"
+    - content: |
         ! Configuration File for keepalived
         global_defs {
             notification_email {
@@ -112,6 +120,14 @@ spec:
   template:
     spec:
       files:
+      - content: |
+          [Service]
+          Environment="HTTP_PROXY=${HTTP_PROXY}"
+          Environment="HTTPS_PROXY=${HTTPS_PROXY}"
+          Environment="NO_PROXY=${NO_PROXY}"
+        owner: root:root
+        path: "${DROPIN_FOLDER}/proxy.conf"
+        permissions: "0755"
       - content: |
           network:
             version: 2

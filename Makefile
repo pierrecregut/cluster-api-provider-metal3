@@ -633,6 +633,7 @@ generate-examples-clusterclass: $(KUSTOMIZE) clean-examples ## Generate examples
 .PHONY: docker-build
 docker-build: ## Build the docker image for controller-manager
 	docker build --network=host --pull \
+	--build-arg http_proxy --build-arg https_proxy --build-arg no_proxy \
 	--build-arg ARCH=$(ARCH) . -t $(CONTROLLER_IMG)-$(ARCH):$(TAG)
 	MANIFEST_IMG=$(CONTROLLER_IMG)-$(ARCH) MANIFEST_TAG=$(TAG) $(MAKE) set-manifest-image
 	$(MAKE) set-manifest-pull-policy
@@ -640,6 +641,7 @@ docker-build: ## Build the docker image for controller-manager
 .PHONY: docker-build-debug
 docker-build-debug: ## Build the docker image for controller-manager with debug info
 	docker build --network=host --pull \
+	--build-arg http_proxy --build-arg https_proxy --build-arg no_proxy \
 	--build-arg LDFLAGS="-extldflags=-static" \
 	--build-arg ARCH=$(ARCH) . -t $(CONTROLLER_IMG)-$(ARCH):$(TAG)
 	MANIFEST_IMG=$(CONTROLLER_IMG)-$(ARCH) MANIFEST_TAG=$(TAG) $(MAKE) set-manifest-image
@@ -648,6 +650,7 @@ docker-build-debug: ## Build the docker image for controller-manager with debug 
 .PHONY: docker-build-e2e
 docker-build-e2e: ## Build the CAPM3 controller image for e2e tests (loaded into the kind mgmt cluster by the test framework)
 	docker build --network=host \
+	--build-arg http_proxy --build-arg https_proxy --build-arg no_proxy \
 	--build-arg ARCH=$(ARCH) . -t $(CONTROLLER_IMG):$(E2E_TAG)
 
 .PHONY: docker-build-fkas

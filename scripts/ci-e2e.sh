@@ -60,6 +60,9 @@ export GINKGO_FOCUS="${GINKGO_FOCUS:-basic}"
 # shellcheck source=./scripts/environment.sh
 source "${REPO_ROOT}/scripts/environment.sh"
 
+export IPA_BASEURI=${IPA_BASEURI:-https://artifactory.nordix.org/artifactory/openstack-remote/ironic-python-agent/dib}
+export EXTERNAL_DNS=${EXTERNAL_DNS:-8.8.8.8}
+
 # Force docker as the container runtime
 export CONTAINER_RUNTIME="docker"
 
@@ -67,6 +70,13 @@ export CONTAINER_RUNTIME="docker"
 # the URL for CAPI nightly build components in e2e_conf.yaml even if not used.
 DATE=$(date '+%Y%m%d' -d '1 day ago')
 export DATE
+
+# Prepare some settings for use behind a proxy (name of a systemd dropin)
+if [ -n "$http_proxy" ]; then
+  export DROPIN_FOLDER="/etc/systemd/system/${K8S_CR}.service.d"
+else
+  export DROPIN_FOLDER="/tmp/"
+fi
 
 # If CAPI_NIGHTLY_BUILD is true, it means that the tests are run against the
 # nightly build of CAPI components which are built from CAPI's main branch.
