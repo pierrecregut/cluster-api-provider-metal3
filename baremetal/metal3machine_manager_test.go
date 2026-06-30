@@ -31,6 +31,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -551,6 +552,45 @@ var _ = Describe("Metal3Machine manager", func() {
 
 		availableHost := newBareMetalHost("availableHost", &bmov1alpha1.BareMetalHostSpec{}, bmov1alpha1.StateReady, &bmov1alpha1.BareMetalHostStatus{}, true, "metadata", false, "", false)
 
+		consumerRefControlPlane := corev1.ObjectReference{
+			Name:       "test1",
+			Namespace:  namespaceName,
+			Kind:       "KubeadmControlPlane",
+			APIVersion: "controlplane.cluster.x-k8s.io/v1beta2",
+		}
+
+		controlplane := &controlplanev1.KubeadmControlPlane{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test1",
+				Namespace: namespaceName,
+			},
+			Spec: controlplanev1.KubeadmControlPlaneSpec{
+				MachineTemplate: controlplanev1.KubeadmControlPlaneMachineTemplate{
+					Spec: controlplanev1.KubeadmControlPlaneMachineTemplateSpec{
+						InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+							Kind:     "Metal3MachineTemplate",
+							Name:     "abc",
+							APIGroup: infrav1.GroupVersion.Group,
+						},
+					},
+				},
+			},
+		}
+
+		machineTemplate := &infrav1.Metal3MachineTemplate{
+			TypeMeta: metav1.TypeMeta{
+				APIVersion: infrav1.GroupVersion.String(),
+				Kind:       "Metal3MachineTemplate",
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "abc",
+				Namespace: namespaceName,
+			},
+			Spec: infrav1.Metal3MachineTemplateSpec{
+				NodeReuse: ptr.To(true),
+			},
+		}
+
 		hostWithConRef := bmov1alpha1.BareMetalHost{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "hostWithConRef",
@@ -646,26 +686,29 @@ var _ = Describe("Metal3Machine manager", func() {
 				},
 			},
 		}
-		hostWithNodeReuseLabelSetToCP := bmov1alpha1.BareMetalHost{
+		hostWithNodeReuseConsumerSetToCP := bmov1alpha1.BareMetalHost{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "hostWithNodeReuseLabelSetToCP",
+				Name:      "hostWithNodeReuseConsumerSetToCP",
 				Namespace: namespaceName,
-				Labels:    map[string]string{nodeReuseLabelName: "cp-test1"},
 			},
-			Spec: bmov1alpha1.BareMetalHostSpec{},
+			Spec: bmov1alpha1.BareMetalHostSpec{
+				ConsumerRef: &consumerRefControlPlane,
+			},
 			Status: bmov1alpha1.BareMetalHostStatus{
 				Provisioning: bmov1alpha1.ProvisionStatus{
 					State: bmov1alpha1.StateAvailable,
 				},
 			},
 		}
-		hostWithNodeReuseLabelSetToCPinFailureDomain := bmov1alpha1.BareMetalHost{
+		hostWithNodeReuseConsumerRefSetToCPinFailureDomain := bmov1alpha1.BareMetalHost{
 			ObjectMeta: metav1.ObjectMeta{
-				Name:      "hostWithNodeReuseLabelSetToCPinFailureDomain",
+				Name:      "hostWithNodeReuseConsumerRefSetToCPinFailureDomain",
 				Namespace: namespaceName,
-				Labels:    map[string]string{nodeReuseLabelName: "cp-test1", FailureDomainLabelName: "my-fd-1"},
+				Labels:    map[string]string{FailureDomainLabelName: "my-fd-1"},
 			},
-			Spec: bmov1alpha1.BareMetalHostSpec{},
+			Spec: bmov1alpha1.BareMetalHostSpec{
+				ConsumerRef: &consumerRefControlPlane,
+			},
 			Status: bmov1alpha1.BareMetalHostStatus{
 				Provisioning: bmov1alpha1.ProvisionStatus{
 					State: bmov1alpha1.StateAvailable,
@@ -676,9 +719,10 @@ var _ = Describe("Metal3Machine manager", func() {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "hostWithNodeReuseLabelStateNone",
 				Namespace: namespaceName,
-				Labels:    map[string]string{nodeReuseLabelName: "cp-test1"},
 			},
-			Spec: bmov1alpha1.BareMetalHostSpec{},
+			Spec: bmov1alpha1.BareMetalHostSpec{
+				ConsumerRef: &consumerRefControlPlane,
+			},
 			Status: bmov1alpha1.BareMetalHostStatus{
 				Provisioning: bmov1alpha1.ProvisionStatus{
 					State: bmov1alpha1.StateNone,
@@ -720,10 +764,12 @@ var _ = Describe("Metal3Machine manager", func() {
 		)
 
 		type testCaseChooseHost struct {
-			Machine          *clusterv1.Machine
-			Hosts            *bmov1alpha1.BareMetalHostList
-			M3Machine        *infrav1.Metal3Machine
-			ExpectedHostName string
+			Machine               *clusterv1.Machine
+			Hosts                 *bmov1alpha1.BareMetalHostList
+			M3Machine             *infrav1.Metal3Machine
+			ControlPlane          *controlplanev1.KubeadmControlPlane
+			Metal3MachineTemplate *infrav1.Metal3MachineTemplate
+			ExpectedHostName      string
 		}
 
 		DescribeTable("Test ChooseHost",
@@ -740,24 +786,29 @@ var _ = Describe("Metal3Machine manager", func() {
 				if tc.M3Machine != nil {
 					objects = append(objects, tc.M3Machine)
 				}
+				if tc.ControlPlane != nil {
+					objects = append(objects, tc.ControlPlane)
+				}
+				if tc.Metal3MachineTemplate != nil {
+					objects = append(objects, tc.Metal3MachineTemplate)
+				}
 				fakeClient := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(objects...).Build()
 				machineMgr, err := NewMachineManager(fakeClient, nil, nil, tc.Machine,
-					tc.M3Machine, logr.Discard(),
+					tc.M3Machine, GinkgoLogr,
 				)
 				Expect(err).NotTo(HaveOccurred())
-
 				result, _, _, err := machineMgr.chooseHost(context.TODO())
-
 				if tc.ExpectedHostName == "" {
 					Expect(result).To(BeNil())
 					return
 				}
 				Expect(err).NotTo(HaveOccurred())
 				if tc.ExpectedHostName != "" {
+					Expect(result).NotTo(BeNil())
 					Expect(result.Name).To(Equal(tc.ExpectedHostName))
 				}
 			},
-			Entry("Pick hostWithNodeReuseLabelSetToCP, which has a matching nodeReuseLabelName", testCaseChooseHost{
+			Entry("Pick hostWithNodeReuseConsumerRefSetToCP, which has a matching consumerRef", testCaseChooseHost{
 				Machine: &clusterv1.Machine{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      machineName,
@@ -778,11 +829,13 @@ var _ = Describe("Metal3Machine manager", func() {
 						InfrastructureRef: *infrastructureRef,
 					},
 				},
-				Hosts:            &bmov1alpha1.BareMetalHostList{Items: []bmov1alpha1.BareMetalHost{hostWithOtherConsRef, *availableHost, hostWithNodeReuseLabelSetToCP}},
-				M3Machine:        m3mconfig,
-				ExpectedHostName: hostWithNodeReuseLabelSetToCP.Name,
+				Hosts:                 &bmov1alpha1.BareMetalHostList{Items: []bmov1alpha1.BareMetalHost{hostWithOtherConsRef, *availableHost, hostWithNodeReuseConsumerSetToCP}},
+				Metal3MachineTemplate: machineTemplate,
+				ControlPlane:          controlplane,
+				M3Machine:             m3mconfig,
+				ExpectedHostName:      hostWithNodeReuseConsumerSetToCP.Name,
 			}),
-			Entry("Requeu hostWithNodeReuseLabelStateNone, which has a matching nodeReuseLabelName", testCaseChooseHost{
+			Entry("Requeue hostWithNodeReuseLabelStateNone, which has a matching nodeReuse consumerRef", testCaseChooseHost{
 				Machine: &clusterv1.Machine{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      machineName,
@@ -803,9 +856,11 @@ var _ = Describe("Metal3Machine manager", func() {
 						InfrastructureRef: *infrastructureRef,
 					},
 				},
-				Hosts:            &bmov1alpha1.BareMetalHostList{Items: []bmov1alpha1.BareMetalHost{hostWithOtherConsRef, *availableHost, hostWithNodeReuseLabelStateNone}},
-				M3Machine:        m3mconfig,
-				ExpectedHostName: "",
+				Hosts:                 &bmov1alpha1.BareMetalHostList{Items: []bmov1alpha1.BareMetalHost{hostWithOtherConsRef, *availableHost, hostWithNodeReuseLabelStateNone}},
+				Metal3MachineTemplate: machineTemplate,
+				ControlPlane:          controlplane,
+				M3Machine:             m3mconfig,
+				ExpectedHostName:      "",
 			}),
 			Entry("Pick availableHost which lacks ConsumerRef", testCaseChooseHost{
 				Machine:          newMachine(machineName, infrastructureRef),
@@ -868,7 +923,7 @@ var _ = Describe("Metal3Machine manager", func() {
 					ExpectedHostName: hostWithLabel.Name,
 				},
 			),
-			Entry("Choose hosts with a nodeReuseLabelName set to CP, even without a label selector",
+			Entry("Choose hosts with a nodeReuse ConsumerRef set to CP, even without a label selector",
 				testCaseChooseHost{
 					Machine: &clusterv1.Machine{
 						ObjectMeta: metav1.ObjectMeta{
@@ -890,9 +945,11 @@ var _ = Describe("Metal3Machine manager", func() {
 							InfrastructureRef: *infrastructureRef,
 						},
 					},
-					Hosts:            &bmov1alpha1.BareMetalHostList{Items: []bmov1alpha1.BareMetalHost{hostWithNodeReuseLabelSetToCP}},
-					M3Machine:        m3mconfig,
-					ExpectedHostName: hostWithNodeReuseLabelSetToCP.Name,
+					Hosts:                 &bmov1alpha1.BareMetalHostList{Items: []bmov1alpha1.BareMetalHost{hostWithNodeReuseConsumerSetToCP}},
+					M3Machine:             m3mconfig,
+					ExpectedHostName:      hostWithNodeReuseConsumerSetToCP.Name,
+					ControlPlane:          controlplane,
+					Metal3MachineTemplate: machineTemplate,
 				},
 			),
 			Entry("Choose the host with the right label", testCaseChooseHost{
@@ -935,7 +992,7 @@ var _ = Describe("Metal3Machine manager", func() {
 			}),
 			Entry("Choose available host, when hosts in FailureDomain not available", testCaseChooseHost{
 				Machine:          newMachine(machineName, infrastructureRef6),
-				Hosts:            &bmov1alpha1.BareMetalHostList{Items: []bmov1alpha1.BareMetalHost{*availableHost, hostWithOtherConsRef, hostWithNodeReuseLabelSetToCP}},
+				Hosts:            &bmov1alpha1.BareMetalHostList{Items: []bmov1alpha1.BareMetalHost{*availableHost, hostWithOtherConsRef, hostWithNodeReuseConsumerSetToCP}},
 				M3Machine:        m3mconfig6,
 				ExpectedHostName: availableHost.Name,
 			}),
@@ -960,9 +1017,11 @@ var _ = Describe("Metal3Machine manager", func() {
 						InfrastructureRef: *infrastructureRef,
 					},
 				},
-				Hosts:            &bmov1alpha1.BareMetalHostList{Items: []bmov1alpha1.BareMetalHost{*availableHost, hostWithLabel, hostWithFailureDomainLabel, hostWithNodeReuseLabelSetToCPinFailureDomain}},
-				M3Machine:        m3mconfig6,
-				ExpectedHostName: hostWithNodeReuseLabelSetToCPinFailureDomain.Name,
+				Hosts:                 &bmov1alpha1.BareMetalHostList{Items: []bmov1alpha1.BareMetalHost{*availableHost, hostWithLabel, hostWithFailureDomainLabel, hostWithNodeReuseConsumerRefSetToCPinFailureDomain}},
+				ControlPlane:          controlplane,
+				Metal3MachineTemplate: machineTemplate,
+				M3Machine:             m3mconfig6,
+				ExpectedHostName:      hostWithNodeReuseConsumerRefSetToCPinFailureDomain.Name,
 			}),
 			Entry("Choose host is not in Failure Domain, when NodeReuse is set", testCaseChooseHost{
 				Machine: &clusterv1.Machine{
@@ -985,9 +1044,11 @@ var _ = Describe("Metal3Machine manager", func() {
 						InfrastructureRef: *infrastructureRef,
 					},
 				},
-				Hosts:            &bmov1alpha1.BareMetalHostList{Items: []bmov1alpha1.BareMetalHost{*availableHost, hostWithLabel, hostWithFailureDomainLabel, hostWithNodeReuseLabelSetToCP}},
-				M3Machine:        m3mconfig6,
-				ExpectedHostName: hostWithNodeReuseLabelSetToCP.Name,
+				Hosts:                 &bmov1alpha1.BareMetalHostList{Items: []bmov1alpha1.BareMetalHost{*availableHost, hostWithLabel, hostWithFailureDomainLabel, hostWithNodeReuseConsumerSetToCP}},
+				M3Machine:             m3mconfig6,
+				ControlPlane:          controlplane,
+				Metal3MachineTemplate: machineTemplate,
+				ExpectedHostName:      hostWithNodeReuseConsumerSetToCP.Name,
 			}),
 		)
 	})
@@ -1977,9 +2038,6 @@ var _ = Describe("Metal3Machine manager", func() {
 				To(Equal(m3mconfig.Namespace))
 			Expect(tc.Host.Spec.ConsumerRef.Kind).To(Equal(metal3MachineKind))
 
-			if tc.expectNodeReuseLabelDeleted {
-				Expect(tc.Host.Labels[nodeReuseLabelName]).To(Equal(""))
-			}
 		},
 		Entry("User data has explicit alternate namespace", testCaseSetHostSpec{
 			UserDataNamespace:         "otherns",
@@ -2336,7 +2394,6 @@ var _ = Describe("Metal3Machine manager", func() {
 		ExpectSecretDeleted             bool
 		ExpectClusterLabelDeleted       bool
 		ExpectedPausedAnnotationDeleted bool
-		NodeReuseEnabled                bool
 		MachineIsControlPlane           bool
 		MachineIsNotControlPlane        bool
 		ExpectedBMHOnlineStatus         bool
@@ -2406,23 +2463,16 @@ var _ = Describe("Metal3Machine manager", func() {
 
 				err = fakeClient.Get(context.TODO(), key, &host)
 				Expect(err).NotTo(HaveOccurred())
-
-				name := ""
-				kind := ""
-				expectedName := ""
-				expectedKind := ""
-				if host.Spec.ConsumerRef != nil {
-					name = host.Spec.ConsumerRef.Name
-					kind = host.Spec.ConsumerRef.Kind
-				}
 				if tc.ExpectedConsumerRef != nil {
-					expectedName = tc.ExpectedConsumerRef.Name
-					expectedKind = tc.ExpectedConsumerRef.Kind
-				}
-				Expect(name).To(Equal(expectedName))
-				Expect(kind).To(Equal(expectedKind))
-				if tc.NodeReuseEnabled {
-					Expect(kind).To(Equal("Cluster"))
+					consumerRef := host.Spec.ConsumerRef
+					expected := tc.ExpectedConsumerRef
+					Expect(consumerRef).NotTo(BeNil())
+					Expect(consumerRef.Name).To(Equal(expected.Name))
+					Expect(consumerRef.Namespace).To(Equal(expected.Namespace))
+					Expect(consumerRef.APIVersion).To(Equal(expected.APIVersion))
+					Expect(consumerRef.Kind).To(Equal(expected.Kind))
+				} else {
+					Expect(host.Spec.ConsumerRef).To(BeNil())
 				}
 				if machineMgr.Metal3Machine.Status.MetaData == nil {
 					Expect(host.Spec.MetaData).NotTo(BeNil())
@@ -2505,10 +2555,6 @@ var _ = Describe("Metal3Machine manager", func() {
 					Expect(Capm3FastTrack).To(Equal("false"))
 				}
 				Expect(savedbmh.Spec.Online).To(Equal(tc.ExpectedBMHOnlineStatus))
-				if tc.NodeReuseEnabled {
-					Expect(savedbmh.Labels).ToNot(BeNil())
-					Expect(savedbmh.Labels[nodeReuseLabelName]).To(Equal(tc.ExpectedNodeReuseValue))
-				}
 			}
 		},
 		Entry("Deprovisioning needed", testCaseDelete{
@@ -2972,12 +3018,10 @@ var _ = Describe("Metal3Machine manager", func() {
 					},
 					NodeReuse: ptr.To(true),
 				}},
-			NodeReuseEnabled:       true,
-			ExpectedNodeReuseValue: "md-test1",
 			ExpectedConsumerRef: &corev1.ObjectReference{
-				Name:       "baremetal-testcluster",
+				Name:       "test1",
 				Namespace:  namespaceName,
-				Kind:       "Cluster",
+				Kind:       "MachineDeployment",
 				APIVersion: clusterv1.GroupVersion.String(),
 			},
 		}),
@@ -3154,7 +3198,6 @@ var _ = Describe("Metal3Machine manager", func() {
 			Cluster:             newCluster(clusterName),
 			Secret:              newSecret(),
 			ExpectSecretDeleted: false,
-			NodeReuseEnabled:    true,
 			Metal3MachineTemplate: &infrav1.Metal3MachineTemplate{
 				TypeMeta: metav1.TypeMeta{
 					APIVersion: infrav1.GroupVersion.String(),
@@ -3194,10 +3237,10 @@ var _ = Describe("Metal3Machine manager", func() {
 				}},
 			ExpectedNodeReuseValue: "cp-test1",
 			ExpectedConsumerRef: &corev1.ObjectReference{
-				Name:       "baremetal-testcluster",
+				Name:       "test1",
 				Namespace:  namespaceName,
-				Kind:       "Cluster",
-				APIVersion: clusterv1.GroupVersion.String(),
+				Kind:       "KubeadmControlPlane",
+				APIVersion: controlplanev1.GroupVersion.String(),
 			},
 		}),
 		Entry("NodeReuse enabled, machine is controlplane, transient error", testCaseDelete{
@@ -4870,268 +4913,55 @@ var _ = Describe("Metal3Machine manager", func() {
 		}),
 	)
 
-	type testCaseNodeReuseLabelMatches struct {
-		Machine                  *clusterv1.Machine
-		Host                     *bmov1alpha1.BareMetalHost
-		expectNodeReuseLabelName string
-		expectNodeReuseLabel     bool
-		expectMatch              bool
+	type testCaseGetNodeReuserRef struct {
+		Machine           *clusterv1.Machine
+		MachineTemplate   *infrav1.Metal3MachineTemplate
+		ControlPlane      client.Object
+		MachineSets       []clusterv1.MachineSet
+		expectedObjectRef *corev1.ObjectReference
+		expectError       bool
+		failingResource   *client.ObjectKey
 	}
-	DescribeTable("Test NodeReuseLabelMatches",
-		func(tc testCaseNodeReuseLabelMatches) {
+
+	DescribeTable("Test getNodeReuserRef",
+		func(tc testCaseGetNodeReuserRef) {
 			objects := []client.Object{}
 			if tc.Machine != nil {
 				objects = append(objects, tc.Machine)
 			}
-			if tc.Host != nil {
-				objects = append(objects, tc.Host)
+			if tc.ControlPlane != nil {
+				objects = append(objects, tc.ControlPlane)
 			}
-			fakeClient := fake.NewClientBuilder().WithScheme(setupSchemeMm()).WithObjects(objects...).Build()
-
+			if tc.MachineTemplate != nil {
+				objects = append(objects, tc.MachineTemplate)
+			}
+			for i := range tc.MachineSets {
+				objects = append(objects, &tc.MachineSets[i])
+			}
+			scheme := setupSchemeMm()
+			Expect(controlplanev1.AddToScheme(scheme)).To(Succeed())
+			fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+			if tc.failingResource != nil {
+				fakeClient = &FailingClient{WithWatch: fakeClient, FailingResource: *tc.failingResource}
+			}
 			machineMgr, err := NewMachineManager(fakeClient, nil, nil, tc.Machine,
-				nil, logr.Discard(),
+				nil, GinkgoLogr,
 			)
 			Expect(err).NotTo(HaveOccurred())
 
-			check := machineMgr.nodeReuseLabelMatches(context.TODO(), tc.Host)
-			if tc.expectNodeReuseLabel {
-				Expect(tc.Host.Labels[nodeReuseLabelName]).To(Equal(tc.expectNodeReuseLabelName))
-			}
-			if tc.expectMatch {
-				Expect(check).To(BeTrue())
-			} else {
-				Expect(check).To(BeFalse())
-			}
-		},
-		Entry("Should return false if host is nil", testCaseNodeReuseLabelMatches{
-			Host:        nil,
-			expectMatch: false,
-		}),
-		Entry("Should return false if host labels is nil", testCaseNodeReuseLabelMatches{
-			Host: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: nil,
-				},
-			},
-			expectMatch: false,
-		}),
-		Entry("Should match, if machine is controlplane  and nodeReuseLabelName matches KubeadmControlPlane name on the host", testCaseNodeReuseLabelMatches{
-			Machine: &clusterv1.Machine{
-				TypeMeta: metav1.TypeMeta{},
-				ObjectMeta: metav1.ObjectMeta{
-					OwnerReferences: []metav1.OwnerReference{
-						{
-							APIVersion: controlplanev1.GroupVersion.String(),
-							Kind:       "KubeadmControlPlane",
-							Name:       "test1",
-						},
-					},
-					Labels: map[string]string{
-						clusterv1.MachineControlPlaneLabel: "cluster.x-k8s.io/control-plane",
-					},
-				},
-			},
-			Host: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "cp-test1",
-					Labels: map[string]string{
-						nodeReuseLabelName: "cp-test1",
-						"foo":              "bar",
-					},
-				},
-			},
-			expectNodeReuseLabel:     true,
-			expectNodeReuseLabelName: "cp-test1",
-			expectMatch:              true,
-		}),
-		Entry("Should return false if nodeReuseLabelName is empty for host", testCaseNodeReuseLabelMatches{
-			Machine: &clusterv1.Machine{
-				TypeMeta: metav1.TypeMeta{},
-				ObjectMeta: metav1.ObjectMeta{
-					OwnerReferences: []metav1.OwnerReference{
-						{
-							APIVersion: controlplanev1.GroupVersion.String(),
-							Kind:       "KubeadmControlPlane",
-							Name:       "test1",
-						},
-					},
-					Labels: map[string]string{
-						clusterv1.MachineControlPlaneLabel: "cluster.x-k8s.io/control-plane",
-					},
-				},
-			},
-			Host: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "cp-test1",
-					Labels: map[string]string{
-						nodeReuseLabelName: "",
-					},
-				},
-			},
-			expectNodeReuseLabel: false,
-			expectMatch:          false,
-		}),
-		Entry("Should return false if nodeReuseLabelName on the host does not match with KubeadmControlPlane name", testCaseNodeReuseLabelMatches{
-			Machine: &clusterv1.Machine{
-				TypeMeta: metav1.TypeMeta{},
-				ObjectMeta: metav1.ObjectMeta{
-					OwnerReferences: []metav1.OwnerReference{
-						{
-							APIVersion: controlplanev1.GroupVersion.String(),
-							Kind:       "KubeadmControlPlane",
-							Name:       "test1",
-						},
-					},
-					Labels: map[string]string{
-						clusterv1.MachineControlPlaneLabel: "cluster.x-k8s.io/control-plane",
-					},
-				},
-			},
-			Host: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "cp-test1",
-					Labels: map[string]string{
-						nodeReuseLabelName: "abc",
-					},
-				},
-			},
-			expectNodeReuseLabel: false,
-			expectMatch:          false,
-		}),
-		Entry("Should return false if nodeReuseLabelName on host is empty and machine is not owned by KubeadmControlPlane", testCaseNodeReuseLabelMatches{
-			Machine: &clusterv1.Machine{
-				TypeMeta: metav1.TypeMeta{},
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						clusterv1.MachineControlPlaneLabel: "",
-					},
-				},
-			},
-			Host: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "md-test1",
-					Labels: map[string]string{
-						nodeReuseLabelName: "",
-					},
-				},
-			},
-			expectNodeReuseLabel: false,
-			expectMatch:          false,
-		}),
-		Entry("Should return false if nodeReuseLabelName on the host does not match with MachineDeployment name", testCaseNodeReuseLabelMatches{
-			Machine: &clusterv1.Machine{
-				TypeMeta: metav1.TypeMeta{},
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						clusterv1.MachineDeploymentNameLabel: "cluster.x-k8s.io/deployment-name",
-					},
-				},
-			},
-			Host: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "md-test1",
-					Labels: map[string]string{
-						nodeReuseLabelName: "abc",
-					},
-				},
-			},
-			expectNodeReuseLabel: false,
-			expectMatch:          false,
-		}),
-	)
-
-	type testCaseNodeReuseLabelExists struct {
-		Host                 *bmov1alpha1.BareMetalHost
-		expectNodeReuseLabel bool
-	}
-	DescribeTable("Test NodeReuseLabelExists",
-		func(tc testCaseNodeReuseLabelExists) {
-			objects := []client.Object{}
-			if tc.Host != nil {
-				objects = append(objects, tc.Host)
-			}
-			fakeClient := fake.NewClientBuilder().WithScheme(setupSchemeMm()).WithObjects(objects...).Build()
-
-			machineMgr, err := NewMachineManager(fakeClient, nil, nil, nil,
-				nil, logr.Discard(),
-			)
-			Expect(err).NotTo(HaveOccurred())
-
-			check := machineMgr.nodeReuseLabelExists(context.TODO(), tc.Host)
-			Expect(err).NotTo(HaveOccurred())
-			if tc.expectNodeReuseLabel {
-				Expect(check).To(BeTrue())
-			} else {
-				Expect(check).To(BeFalse())
-			}
-		},
-		Entry("Node reuse label exists on the host", testCaseNodeReuseLabelExists{
-			Host: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						nodeReuseLabelName: cpName,
-						"foo":              "bar",
-					},
-				},
-			},
-			expectNodeReuseLabel: true,
-		}),
-		Entry("Node reuse label does not exist on the host", testCaseNodeReuseLabelExists{
-			Host: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{},
-				},
-			},
-			expectNodeReuseLabel: false,
-		}),
-		Entry("Should return false if host is nil", testCaseNodeReuseLabelExists{
-			Host:                 nil,
-			expectNodeReuseLabel: false,
-		}),
-		Entry("Should return false if host Labels is nil", testCaseNodeReuseLabelExists{
-			Host: &bmov1alpha1.BareMetalHost{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: nil,
-				},
-			},
-			expectNodeReuseLabel: false,
-		}),
-	)
-
-	type testCaseGetControlPlaneName struct {
-		Machine        *clusterv1.Machine
-		expectedCp     bool
-		expectedCpName string
-		expectError    bool
-	}
-
-	DescribeTable("Test getControlPlaneName",
-		func(tc testCaseGetControlPlaneName) {
-			objects := []client.Object{}
-			if tc.Machine != nil {
-				objects = append(objects, tc.Machine)
-			}
-			fakeClient := fake.NewClientBuilder().WithScheme(setupSchemeMm()).WithObjects(objects...).Build()
-			machineMgr, err := NewMachineManager(fakeClient, nil, nil, tc.Machine,
-				nil, logr.Discard(),
-			)
-			Expect(err).NotTo(HaveOccurred())
-
-			result, err := machineMgr.getControlPlaneName(context.TODO())
+			result, err := machineMgr.getNodeReuserRef(context.TODO())
 			if tc.expectError {
 				Expect(err).To(HaveOccurred())
-			} else {
-				Expect(err).NotTo(HaveOccurred())
+				return
 			}
-
-			if tc.expectedCp {
-				Expect(result).To(Equal(tc.expectedCpName))
-			}
-
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(tc.expectedObjectRef))
 		},
-		Entry("Should find the expected cp", testCaseGetControlPlaneName{
+		Entry("control-plane case no error", testCaseGetNodeReuserRef{
 			Machine: &clusterv1.Machine{
 				ObjectMeta: metav1.ObjectMeta{
+					Name:      machineName,
+					Namespace: namespaceName,
 					OwnerReferences: []metav1.OwnerReference{
 						{
 							APIVersion: controlplanev1.GroupVersion.String(),
@@ -5139,303 +4969,296 @@ var _ = Describe("Metal3Machine manager", func() {
 							Name:       "test1",
 						},
 					},
+					Labels: map[string]string{
+						clusterv1.MachineControlPlaneLabel: "cluster.x-k8s.io/control-plane",
+					},
 				},
 			},
-			expectError:    false,
-			expectedCp:     true,
-			expectedCpName: "cp-test1",
+			ControlPlane: &controlplanev1.KubeadmControlPlane{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test1",
+					Namespace: namespaceName,
+				},
+				Spec: controlplanev1.KubeadmControlPlaneSpec{
+					MachineTemplate: controlplanev1.KubeadmControlPlaneMachineTemplate{
+						Spec: controlplanev1.KubeadmControlPlaneMachineTemplateSpec{
+							InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+								Kind:     "Metal3MachineTemplate",
+								Name:     "abc",
+								APIGroup: infrav1.GroupVersion.Group,
+							},
+						},
+					},
+				},
+			},
+			MachineTemplate: &infrav1.Metal3MachineTemplate{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: infrav1.GroupVersion.String(),
+					Kind:       "Metal3MachineTemplate",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "abc",
+					Namespace: namespaceName,
+				},
+				Spec: infrav1.Metal3MachineTemplateSpec{
+					NodeReuse: ptr.To(true),
+				},
+			},
+			expectedObjectRef: &corev1.ObjectReference{
+				Kind:       "KubeadmControlPlane",
+				APIVersion: controlplanev1.GroupVersion.String(),
+				Name:       "test1",
+				Namespace:  namespaceName,
+			},
 		}),
-		Entry("Should find the expected ControlPlane for any Kind/Provider", testCaseGetControlPlaneName{
+		Entry("control-plane case no error: any kind", testCaseGetNodeReuserRef{
 			Machine: &clusterv1.Machine{
 				ObjectMeta: metav1.ObjectMeta{
+					Name:      machineName,
+					Namespace: namespaceName,
 					OwnerReferences: []metav1.OwnerReference{
 						{
 							APIVersion: controlplanev1.GroupVersion.String(),
-							Kind:       "AnyControlPlane",
+							Kind:       "MyControlPlane",
 							Name:       "test1",
+						},
+					},
+					Labels: map[string]string{
+						clusterv1.MachineControlPlaneLabel: "cluster.x-k8s.io/control-plane",
+					},
+				},
+			},
+			ControlPlane: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": controlplanev1.GroupVersion.String(),
+					"kind":       "MyControlPlane",
+					"metadata": map[string]interface{}{
+						"name":      "test1",
+						"namespace": namespaceName,
+					},
+					"spec": map[string]interface{}{
+						"machineTemplate": map[string]interface{}{
+							"spec": map[string]interface{}{
+								"infrastructureRef": map[string]interface{}{
+									"kind":     "Metal3MachineTemplate",
+									"name":     "abc",
+									"APIGroup": infrav1.GroupVersion.Group,
+								},
+							},
 						},
 					},
 				},
 			},
-			expectError:    false,
-			expectedCp:     true,
-			expectedCpName: "cp-test1",
-		}),
-		Entry("Should not find the expected cp, API version is not correct", testCaseGetControlPlaneName{
-			Machine: &clusterv1.Machine{
+			MachineTemplate: &infrav1.Metal3MachineTemplate{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: infrav1.GroupVersion.String(),
+					Kind:       "Metal3MachineTemplate",
+				},
 				ObjectMeta: metav1.ObjectMeta{
+					Name:      "abc",
+					Namespace: namespaceName,
+				},
+				Spec: infrav1.Metal3MachineTemplateSpec{
+					NodeReuse: ptr.To(true),
+				},
+			},
+			expectedObjectRef: &corev1.ObjectReference{
+				Kind:       "MyControlPlane",
+				APIVersion: controlplanev1.GroupVersion.String(),
+				Name:       "test1",
+				Namespace:  namespaceName,
+			},
+		}),
+		Entry("machine deployment no error", testCaseGetNodeReuserRef{
+			Machine: &clusterv1.Machine{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: clusterv1.GroupVersion.String(),
+					Kind:       "Machine",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      machineName,
+					Namespace: namespaceName,
 					OwnerReferences: []metav1.OwnerReference{
 						{
-							APIVersion: infrav1.GroupVersion.String(),
-							Kind:       "KubeadmControlPlane",
-							Name:       "test1",
+							APIVersion: clusterv1.GroupVersion.String(),
+							Kind:       "MachineSet",
+							Name:       "ms-test1",
 						},
 					},
 				},
 			},
-			expectError: true,
+			MachineSets: []clusterv1.MachineSet{
+				{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "ms-test1",
+						Namespace: namespaceName,
+						OwnerReferences: []metav1.OwnerReference{
+							{
+								APIVersion: clusterv1.GroupVersion.String(),
+								Kind:       "MachineDeployment",
+								Name:       "test1",
+							},
+						},
+					},
+					Spec: clusterv1.MachineSetSpec{
+						Template: clusterv1.MachineTemplateSpec{
+							Spec: clusterv1.MachineSpec{
+								InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+									Kind:     "Metal3MachineTemplate",
+									Name:     "abc",
+									APIGroup: infrav1.GroupVersion.Group,
+								},
+							},
+						},
+					},
+				},
+			},
+			MachineTemplate: &infrav1.Metal3MachineTemplate{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: infrav1.GroupVersion.String(),
+					Kind:       "Metal3MachineTemplate",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "abc",
+					Namespace: namespaceName,
+				},
+				Spec: infrav1.Metal3MachineTemplateSpec{
+					NodeReuse: ptr.To(true),
+				},
+			},
+			expectedObjectRef: &corev1.ObjectReference{
+				APIVersion: clusterv1.GroupVersion.String(),
+				Kind:       "MachineDeployment",
+				Name:       "test1",
+				Namespace:  namespaceName,
+			},
 		}),
-		Entry("Should not find the expected cp and error when machine is nil", testCaseGetControlPlaneName{
+		Entry("Should not find the expected cp and error when machine is nil", testCaseGetNodeReuserRef{
 			Machine:     nil,
 			expectError: true,
 		}),
-		Entry("Should give an error if Machine.ObjectMeta.OwnerReferences is nil", testCaseGetControlPlaneName{
+		Entry("Should give back nil if Machine.ObjectMeta.OwnerReferences is nil", testCaseGetNodeReuserRef{
 			Machine: &clusterv1.Machine{
 				ObjectMeta: metav1.ObjectMeta{
 					OwnerReferences: nil,
 				},
 			},
-			expectError: true,
 		}),
-	)
-
-	type testCaseGetMachineDeploymentName struct {
-		Machine            *clusterv1.Machine
-		MachineSetList     *clusterv1.MachineSetList
-		expectedMachineSet *clusterv1.MachineSet
-		expectedMD         bool
-		expectedMDName     string
-		expectError        bool
-		failingResource    *client.ObjectKey
-	}
-	DescribeTable("Test GetMachineDeploymentName",
-		func(tc testCaseGetMachineDeploymentName) {
-			objects := []client.Object{}
-			if tc.Machine != nil {
-				objects = append(objects, tc.Machine)
-			}
-			if tc.MachineSetList != nil {
-				for i := range tc.MachineSetList.Items {
-					objects = append(objects, &tc.MachineSetList.DeepCopy().Items[i])
-				}
-			}
-			fakeClient := fake.NewClientBuilder().WithScheme(setupSchemeMm()).WithObjects(objects...).Build()
-			if tc.failingResource != nil {
-				fakeClient = &FailingClient{WithWatch: fakeClient, FailingResource: *tc.failingResource}
-			}
-			machineMgr, err := NewMachineSetManager(fakeClient, tc.Machine,
-				tc.MachineSetList, logr.Discard(),
-			)
-			Expect(err).NotTo(HaveOccurred())
-
-			result, err := machineMgr.getMachineDeploymentName(context.TODO())
-			if tc.expectError {
-				Expect(err).To(HaveOccurred())
-				Expect(tc.expectedMachineSet).To(BeNil())
-			} else {
-				Expect(err).NotTo(HaveOccurred())
-			}
-			if tc.expectedMD {
-				Expect(result).To(Equal(tc.expectedMDName))
-			} else {
-				Expect(tc.expectedMDName).To(BeEmpty())
-			}
-		},
-		Entry("Should find the expected MachineDeployment name", testCaseGetMachineDeploymentName{
+		Entry("Machine Deployment: should return an error when a transient error occurs while fetching machineSet", testCaseGetNodeReuserRef{
 			Machine: machineOwnedByMachineSet(),
-			MachineSetList: &clusterv1.MachineSetList{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: clusterv1.GroupVersion.String(),
-					Kind:       "MachineSetList",
-				},
-				ListMeta: metav1.ListMeta{},
-				Items: []clusterv1.MachineSet{
-					{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: clusterv1.GroupVersion.String(),
-							Kind:       "MachineSet",
-						},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "ms-test1",
-							OwnerReferences: []metav1.OwnerReference{
-								{
-									APIVersion: clusterv1.GroupVersion.String(),
-									Kind:       "MachineDeployment",
-									Name:       "test1",
-								},
+			MachineSets: []clusterv1.MachineSet{
+				{
+					TypeMeta: metav1.TypeMeta{
+						APIVersion: clusterv1.GroupVersion.String(),
+						Kind:       "MachineSet",
+					},
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "ms-test1",
+						OwnerReferences: []metav1.OwnerReference{
+							{
+								APIVersion: clusterv1.GroupVersion.String(),
+								Kind:       "MachineDeployment",
+								Name:       "test1",
 							},
 						},
 					},
-					{
-						TypeMeta: metav1.TypeMeta{},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "test2",
-						},
-					},
-					{
-						TypeMeta: metav1.TypeMeta{},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "test3",
-						},
+				},
+				{
+					TypeMeta: metav1.TypeMeta{},
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test2",
 					},
 				},
-			},
-			expectedMachineSet: &clusterv1.MachineSet{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "ms-test1",
-					OwnerReferences: []metav1.OwnerReference{
-						{
-							APIVersion: clusterv1.GroupVersion.String(),
-							Kind:       "MachineDeployment",
-							Name:       "test1",
-						},
-					},
-				},
-			},
-			expectError:    false,
-			expectedMD:     true,
-			expectedMDName: "md-test1",
-		}),
-		Entry("Should return an error when a transient error occurs while fetching machineSet", testCaseGetMachineDeploymentName{
-			Machine: machineOwnedByMachineSet(),
-			MachineSetList: &clusterv1.MachineSetList{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: clusterv1.GroupVersion.String(),
-					Kind:       "MachineSetList",
-				},
-				ListMeta: metav1.ListMeta{},
-				Items: []clusterv1.MachineSet{
-					{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: clusterv1.GroupVersion.String(),
-							Kind:       "MachineSet",
-						},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "ms-test1",
-							OwnerReferences: []metav1.OwnerReference{
-								{
-									APIVersion: clusterv1.GroupVersion.String(),
-									Kind:       "MachineDeployment",
-									Name:       "test1",
-								},
-							},
-						},
-					},
-					{
-						TypeMeta: metav1.TypeMeta{},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "test2",
-						},
-					},
-					{
-						TypeMeta: metav1.TypeMeta{},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "test3",
-						},
+				{
+					TypeMeta: metav1.TypeMeta{},
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test3",
 					},
 				},
 			},
 			failingResource: &client.ObjectKey{Name: "ms-test1"},
 			expectError:     true,
 		}),
-
-		Entry("Should not find the expected MachineDeployment name, MachineSet OwnerRef Kind is not correct", testCaseGetMachineDeploymentName{
-			Machine: machineOwnedByMachineSet(),
-			MachineSetList: &clusterv1.MachineSetList{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: clusterv1.GroupVersion.String(),
-					Kind:       "MachineSetList",
-				},
-				ListMeta: metav1.ListMeta{},
-				Items: []clusterv1.MachineSet{
-					{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: clusterv1.GroupVersion.String(),
-							Kind:       "MachineSet",
+		Entry("control-plane: Should return an error for a transient problem while fetching control-plane", testCaseGetNodeReuserRef{
+			Machine: &clusterv1.Machine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      machineName,
+					Namespace: namespaceName,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: controlplanev1.GroupVersion.String(),
+							Kind:       "KubeadmControlPlane",
+							Name:       "test1",
 						},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "ms-test1",
-							OwnerReferences: []metav1.OwnerReference{
-								{
-									APIVersion: clusterv1.GroupVersion.String(),
-									Kind:       "WrongMachineSetOwnerRefKind",
-									Name:       "test1",
-								},
+					},
+					Labels: map[string]string{
+						clusterv1.MachineControlPlaneLabel: "cluster.x-k8s.io/control-plane",
+					},
+				},
+			},
+			ControlPlane: &controlplanev1.KubeadmControlPlane{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test1",
+					Namespace: namespaceName,
+				},
+				Spec: controlplanev1.KubeadmControlPlaneSpec{
+					MachineTemplate: controlplanev1.KubeadmControlPlaneMachineTemplate{
+						Spec: controlplanev1.KubeadmControlPlaneMachineTemplateSpec{
+							InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+								Kind:     "Metal3MachineTemplate",
+								Name:     "abc",
+								APIGroup: infrav1.GroupVersion.Group,
 							},
 						},
 					},
-					{
-						TypeMeta: metav1.TypeMeta{},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "test2",
-						},
-					},
 				},
 			},
-			expectedMachineSet: nil,
-			expectError:        true,
-			expectedMD:         false,
-			expectedMDName:     "",
-		}),
-		Entry("Should not find the expected MachineDeployment name, MachineSet OwnerRef APIVersion is not correct", testCaseGetMachineDeploymentName{
-			Machine: machineOwnedByMachineSet(),
-			MachineSetList: &clusterv1.MachineSetList{
+			MachineTemplate: &infrav1.Metal3MachineTemplate{
 				TypeMeta: metav1.TypeMeta{
-					APIVersion: clusterv1.GroupVersion.String(),
-					Kind:       "MachineSetList",
+					APIVersion: infrav1.GroupVersion.String(),
+					Kind:       "Metal3MachineTemplate",
 				},
-				ListMeta: metav1.ListMeta{},
-				Items: []clusterv1.MachineSet{
-					{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: clusterv1.GroupVersion.String(),
-							Kind:       "MachineSet",
-						},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "ms-test1",
-							OwnerReferences: []metav1.OwnerReference{
-								{
-									APIVersion: infrav1.GroupVersion.String(),
-									Kind:       "MachineDeployment",
-									Name:       "test1",
-								},
-							},
-						},
-					},
-					{
-						TypeMeta: metav1.TypeMeta{},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "test2",
-						},
-					},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "abc",
+					Namespace: namespaceName,
+				},
+				Spec: infrav1.Metal3MachineTemplateSpec{
+					NodeReuse: ptr.To(true),
 				},
 			},
-			expectedMachineSet: nil,
-			expectError:        true,
-			expectedMD:         false,
-			expectedMDName:     "",
+			failingResource: &client.ObjectKey{Name: "test1", Namespace: namespaceName},
+			expectError:     true,
 		}),
-		Entry("Should not find the expected MachineDeployment name, MachineSet OwnerRef is empty", testCaseGetMachineDeploymentName{
-			Machine: machineOwnedByMachineSet(),
-			MachineSetList: &clusterv1.MachineSetList{
-				TypeMeta: metav1.TypeMeta{
-					APIVersion: clusterv1.GroupVersion.String(),
-					Kind:       "MachineSetList",
-				},
-				ListMeta: metav1.ListMeta{},
-				Items: []clusterv1.MachineSet{
-					{
-						TypeMeta: metav1.TypeMeta{
-							APIVersion: clusterv1.GroupVersion.String(),
-							Kind:       "MachineSet",
-						},
-						ObjectMeta: metav1.ObjectMeta{
-							Name:            "ms-test1",
-							OwnerReferences: []metav1.OwnerReference{},
+		Entry("control-plane: Should return nil if control-plane no longer exists", testCaseGetNodeReuserRef{
+			Machine: &clusterv1.Machine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      machineName,
+					Namespace: namespaceName,
+					OwnerReferences: []metav1.OwnerReference{
+						{
+							APIVersion: controlplanev1.GroupVersion.String(),
+							Kind:       "KubeadmControlPlane",
+							Name:       "test1",
 						},
 					},
-					{
-						TypeMeta: metav1.TypeMeta{},
-						ObjectMeta: metav1.ObjectMeta{
-							Name: "test2",
-						},
+					Labels: map[string]string{
+						clusterv1.MachineControlPlaneLabel: "cluster.x-k8s.io/control-plane",
 					},
 				},
 			},
-			expectedMachineSet: nil,
-			expectError:        true,
-			expectedMD:         false,
-			expectedMDName:     "",
+			MachineTemplate: &infrav1.Metal3MachineTemplate{
+				TypeMeta: metav1.TypeMeta{
+					APIVersion: infrav1.GroupVersion.String(),
+					Kind:       "Metal3MachineTemplate",
+				},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "abc",
+					Namespace: namespaceName,
+				},
+				Spec: infrav1.Metal3MachineTemplateSpec{
+					NodeReuse: ptr.To(true),
+				},
+			},
 		}),
 	)
 
@@ -5445,6 +5268,7 @@ var _ = Describe("Metal3Machine manager", func() {
 		expectedMachineSet *clusterv1.MachineSet
 		expectError        bool
 	}
+
 	DescribeTable("Test GetMachineSet",
 		func(tc testCaseGetMachineSet) {
 			objects := []client.Object{}

@@ -37,6 +37,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
+	controlplanev1 "sigs.k8s.io/cluster-api/api/controlplane/kubeadm/v1beta2"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	capipamv1beta1 "sigs.k8s.io/cluster-api/api/ipam/v1beta1"
 	capipamv1 "sigs.k8s.io/cluster-api/api/ipam/v1beta2"
@@ -151,6 +152,9 @@ func setupScheme() *runtime.Scheme {
 		panic(err)
 	}
 	if err := corev1.AddToScheme(s); err != nil {
+		panic(err)
+	}
+	if err := controlplanev1.AddToScheme(s); err != nil {
 		panic(err)
 	}
 	if err := bmov1alpha1.SchemeBuilder.AddToScheme(s); err != nil {

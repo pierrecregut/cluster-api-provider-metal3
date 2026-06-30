@@ -63,9 +63,7 @@ const (
 	ProviderName = "metal3"
 	// HostAnnotation is the key for an annotation that should go on a Metal3Machine to
 	// reference what BareMetalHost it corresponds to.
-	HostAnnotation = "metal3.io/BareMetalHost"
-	// nodeReuseLabelName is the label set on BMH when node reuse feature is enabled.
-	nodeReuseLabelName = "infrastructure.cluster.x-k8s.io/node-reuse"
+	HostAnnotation     = "metal3.io/BareMetalHost"
 	requeueAfter       = time.Second * 30
 	bmRoleControlPlane = "control-plane"
 	bmRoleNode         = "node"
@@ -707,60 +705,19 @@ func (m *MachineManager) Delete(ctx context.Context) error {
 			if m.Cluster.DeletionTimestamp.IsZero() {
 				// Fetch corresponding Metal3MachineTemplate, to see if nodeReuse
 				// feature is enabled. If set to true, check the machine role. In case
-				// machine role is ControlPlane, set nodeReuseLabelName to ControlPlane
-				// name, otherwise to MachineDeployment name.
+				// machine role is ControlPlane, set consumerRef to the ControlPlane object ref
+				// otherwise to MachineDeployment ref
 				m.Log.Info("Getting Metal3MachineTemplate")
 				if m.Metal3Machine == nil {
 					return errors.New("metal3Machine associated with Metal3MachineTemplate is not found")
 				}
-				var m3mt *infrav1.Metal3MachineTemplate
-				m3mt, err = m.getMetal3MachineTemplate(ctx)
+				var nodeReuserRef *corev1.ObjectReference
+				nodeReuserRef, err = m.getNodeReuserRef(ctx)
 				if err != nil {
-					return fmt.Errorf("cannot get Metal3MachineTemplate: %w", err)
+					return fmt.Errorf("cannot get node reuser reference: %w", err)
 				}
-				if m3mt == nil {
-					// we are here, because while normal deprovisioning, Metal3MachineTemplate will be deleted first
-					// and we can't get it even though Metal3Machine has reference to it. We consider it nil and move
-					// forward with normal deprovisioning.
-					m.Log.Info("Metal3MachineTemplate associated with Metal3Machine is deleted",
-						LogFieldHost, host.Name)
-				} else {
-					m.Log.Info("Found Metal3machineTemplate", "metal3machineTemplate", m3mt.Name)
-					if ptr.Deref(m3mt.Spec.NodeReuse, false) {
-						if host.Labels == nil {
-							host.Labels = make(map[string]string)
-						}
-						// Check if machine is ControlPlane
-						if m.isControlPlane() {
-							// Fetch ControlPlane name for controlplane machine
-							m.Log.Info("Fetch ControlPlane name while deprovisioning host", LogFieldHost, host.Name)
-							var cpName string
-							cpName, err = m.getControlPlaneName(ctx)
-							if err != nil {
-								return err
-							}
-							// Set nodeReuseLabelName on the host to ControlPlane name
-							m.Log.Info("Setting nodeReuseLabelName in host to fetched ControlPlane", LogFieldHost, host.Name, LogFieldControlPlane, cpName)
-							host.Labels[nodeReuseLabelName] = cpName
-						} else {
-							// Fetch MachineDeployment name for worker machine
-							m.Log.Info("Fetch MachineDeployment name while deprovisioning host", LogFieldHost, host.Name)
-							var mdName string
-							mdName, err = m.getMachineDeploymentName(ctx)
-							if err != nil {
-								return err
-							}
-							// Set nodeReuseLabelName on the host to MachineDeployment name
-							m.Log.Info("Setting nodeReuseLabelName in host to fetched MachineDeployment", LogFieldHost, host.Name, LogFieldMachineDeployment, mdName)
-							host.Labels[nodeReuseLabelName] = mdName
-						}
-						host.Spec.ConsumerRef = &corev1.ObjectReference{
-							Name:       m.Cluster.Name,
-							Namespace:  m.Cluster.Namespace,
-							APIVersion: clusterv1.GroupVersion.String(),
-							Kind:       "Cluster",
-						}
-					}
+				if nodeReuserRef != nil {
+					host.Spec.ConsumerRef = nodeReuserRef
 				}
 			}
 		}
@@ -949,19 +906,47 @@ func (m *MachineManager) chooseHost(ctx context.Context) (*bmov1alpha1.BareMetal
 	availableHosts := []*bmov1alpha1.BareMetalHost{}
 	availableHostsWithNodeReuse := []*bmov1alpha1.BareMetalHost{}
 
+	var nodeReuserGroup string
+	nodeReuserRef, err := m.getNodeReuserRef(ctx)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	if nodeReuserRef != nil {
+		aGV, err2 := schema.ParseGroupVersion(nodeReuserRef.APIVersion)
+		if err2 != nil {
+			m.Log.Error(err2, "Found an unparsable APIVersion in owners", "apiVersion", nodeReuserRef.APIVersion)
+			return nil, nil, "", err2
+		}
+		nodeReuserGroup = aGV.Group
+	}
 	for i, host := range hosts.Items {
+		var matchReuser bool
 		if host.Spec.ConsumerRef != nil && consumerRefMatches(host.Spec.ConsumerRef, m.Metal3Machine) {
 			var helper *patch.Helper
 			m.Log.Info("Found host with existing ConsumerRef", LogFieldHost, host.Name)
 			helper, err = patch.NewHelper(&hosts.Items[i], m.client)
 			return &hosts.Items[i], helper, infrav1.AssociateBareMetalHostSuccessReason, err
 		}
-		if m.nodeReuseLabelExists(ctx, &host) {
-			if !m.nodeReuseLabelMatches(ctx, &host) {
+		consumerRef := host.Spec.ConsumerRef
+		if consumerRef != nil {
+			if nodeReuserRef == nil {
 				continue
 			}
-		} else if host.Spec.ConsumerRef != nil {
-			continue
+			if nodeReuserRef.Name != consumerRef.Name || nodeReuserRef.Kind != consumerRef.Kind {
+				continue
+			}
+			gv, err2 := schema.ParseGroupVersion(consumerRef.APIVersion)
+			if err2 != nil {
+				m.Log.Error(err2, "Found an unparsable APIVersion in tested consumerRef",
+					"apiVersion", consumerRef.APIVersion)
+				continue
+			}
+			if nodeReuserGroup != gv.Group {
+				continue
+			}
+			// The BMH consumerRef matches the expected nodeReuser record it and
+			// check that other properties are fulfilled.
+			matchReuser = true
 		}
 		if host.GetDeletionTimestamp() != nil {
 			continue
@@ -985,10 +970,10 @@ func (m *MachineManager) chooseHost(ctx context.Context) (*bmov1alpha1.BareMetal
 			}
 		}
 
-		if m.nodeReuseLabelExists(ctx, &host) && m.nodeReuseLabelMatches(ctx, &host) {
-			m.Log.Info("Found host with nodeReuseLabelName and it matches, adding it to availableHostsWithNodeReuse list", LogFieldHost, host.Name)
+		if matchReuser {
+			m.Log.Info("Found host for nodeReuse and it matches, adding it to availableHostsWithNodeReuse list", LogFieldHost, host.Name)
 			availableHostsWithNodeReuse = append(availableHostsWithNodeReuse, &hosts.Items[i])
-		} else if !m.nodeReuseLabelExists(ctx, &host) {
+		} else {
 			switch host.Status.Provisioning.State {
 			case bmov1alpha1.StateReady, bmov1alpha1.StateAvailable:
 				// Break out of the switch
@@ -1004,7 +989,7 @@ func (m *MachineManager) chooseHost(ctx context.Context) (*bmov1alpha1.BareMetal
 		}
 	}
 
-	m.Log.Info("Host count available with nodeReuseLabelName while choosing host for Metal3 machine", "hostcount", len(availableHostsWithNodeReuse))
+	m.Log.Info("Host count available with matching nodeReuse consumerRef while choosing host for Metal3 machine", "hostcount", len(availableHostsWithNodeReuse))
 	m.Log.Info("Host count available while choosing host for Metal3 machine", "hostcount", len(availableHosts))
 	if len(availableHostsWithNodeReuse) == 0 && len(availableHosts) == 0 {
 		return nil, nil, "", nil
@@ -1013,12 +998,12 @@ func (m *MachineManager) chooseHost(ctx context.Context) (*bmov1alpha1.BareMetal
 	// choose a host.
 	var chosenHost *bmov1alpha1.BareMetalHost
 	chooseHostReason := infrav1.AssociateBareMetalHostSuccessReason
-	// If there are hosts with nodeReuseLabelName:
+	// If there are hosts with nodeReuse:
 	if len(availableHostsWithNodeReuse) != 0 {
 		for _, host := range availableHostsWithNodeReuse {
-			// Build list of hosts in Ready state with nodeReuseLabelName
+			// Build list of hosts in Ready state with nodeReuse
 			hostsInAvailableStateWithNodeReuse := []*bmov1alpha1.BareMetalHost{}
-			// Build list of hosts in any other state than Ready state with nodeReuseLabelName
+			// Build list of hosts in any other state than Ready state with nodeReuse
 			hostsInNotAvailableStateWithNodeReuse := []*bmov1alpha1.BareMetalHost{}
 			if host.Status.Provisioning.State == bmov1alpha1.StateReady || host.Status.Provisioning.State == bmov1alpha1.StateAvailable {
 				hostsInAvailableStateWithNodeReuse = append(hostsInAvailableStateWithNodeReuse, host)
@@ -1028,7 +1013,7 @@ func (m *MachineManager) chooseHost(ctx context.Context) (*bmov1alpha1.BareMetal
 
 			// If host is found in `Ready` state, pick it
 			if len(hostsInAvailableStateWithNodeReuse) != 0 {
-				m.Log.Info("Found host(s) with nodeReuseLabelName in Ready/Available state, choosing the host", "availabeHostCount", len(hostsInAvailableStateWithNodeReuse), LogFieldHost, host.Name)
+				m.Log.Info("Found host(s) with nodeReuse consumerRef in Ready/Available state, choosing the host", "availabeHostCount", len(hostsInAvailableStateWithNodeReuse), LogFieldHost, host.Name)
 				chosenHost, err = m.pickHost(hostsInAvailableStateWithNodeReuse)
 				if err != nil {
 					m.Log.Error(err, "Failed to choose host, not choosing host")
@@ -1038,13 +1023,13 @@ func (m *MachineManager) chooseHost(ctx context.Context) (*bmov1alpha1.BareMetal
 					chooseHostReason = infrav1.AssociateBareMetalHostViaNodeReuseSuccessReason
 				}
 			} else if len(hostsInNotAvailableStateWithNodeReuse) != 0 {
-				errMessage := fmt.Sprint("Found BareMetalHost(s) with nodeReuseLabelName in not-available state, requeuing the BareMetalHost", "notAvailabeHostCount", len(hostsInNotAvailableStateWithNodeReuse), "hoststate", host.Status.Provisioning.State, "host", host.Name)
+				errMessage := fmt.Sprintf("BareMetalHost(s) with matching nodeReuse ConsumerRef in not-available state (count=%d, state=%s, host=%s), requeuing", len(hostsInNotAvailableStateWithNodeReuse), host.Status.Provisioning.State, host.Name)
 				m.Log.Info(errMessage)
 				return nil, nil, "", WithTransientError(errors.New(errMessage), requeueAfter)
 			}
 		}
 	} else {
-		// If there are no hosts with nodeReuseLabelName, fall back
+		// If there are no hosts with nodeReuse consumerRef, fall back
 		// to the current flow and select hosts randomly.
 		m.Log.Info("host(s) count available, choosing a random host", "availabeHostCount", len(availableHosts))
 		chosenHost, err = m.pickHost(availableHosts)
@@ -1118,57 +1103,6 @@ func consumerRefMatches(consumer *corev1.ObjectReference, m3machine *infrav1.Met
 		return false
 	}
 	return gv.Group == infrav1.GroupVersion.Group
-}
-
-// nodeReuseLabelMatches returns true if nodeReuseLabelName matches ControlPlane or MachineDeployment name on the host.
-func (m *MachineManager) nodeReuseLabelMatches(ctx context.Context, host *bmov1alpha1.BareMetalHost) bool {
-	if host == nil {
-		return false
-	}
-	if host.Labels == nil {
-		return false
-	}
-	if m.isControlPlane() {
-		cp, err := m.getControlPlaneName(ctx)
-		if err != nil {
-			return false
-		}
-		if host.Labels[nodeReuseLabelName] == "" {
-			return false
-		}
-		if host.Labels[nodeReuseLabelName] != cp {
-			return false
-		}
-		m.Log.Info("nodeReuseLabelName on the host matches ControlPlane name", LogFieldHost, host.Name, LogFieldControlPlane, cp)
-		return true
-	}
-	md, err := m.getMachineDeploymentName(ctx)
-	if err != nil {
-		return false
-	}
-	if host.Labels[nodeReuseLabelName] == "" {
-		return false
-	}
-	if host.Labels[nodeReuseLabelName] != md {
-		return false
-	}
-	m.Log.Info("nodeReuseLabelName on the host matches MachineDeployment", LogFieldHost, host.Name, LogFieldMachineDeployment, md)
-	return true
-}
-
-// nodeReuseLabelExists returns true if host contains nodeReuseLabelName label.
-func (m *MachineManager) nodeReuseLabelExists(_ context.Context, host *bmov1alpha1.BareMetalHost) bool {
-	if host == nil {
-		return false
-	}
-	if host.Labels == nil {
-		return false
-	}
-	_, ok := host.Labels[nodeReuseLabelName]
-	if ok {
-		m.Log.Info("nodeReuseLabelName exists on the host", LogFieldHost, host.Name)
-	}
-	return ok
 }
 
 // getBMCSecret will return the BMCSecret associated with BMH.
@@ -1300,17 +1234,6 @@ func (m *MachineManager) setHostConsumerRef(_ context.Context, host *bmov1alpha1
 		Name:       m.Metal3Machine.Name,
 		Namespace:  m.Metal3Machine.Namespace,
 		APIVersion: m.Metal3Machine.APIVersion,
-	}
-
-	// Delete nodeReuseLabelName from host.
-	m.Log.Info("Deleting nodeReuseLabelName from host, if any")
-
-	labels := host.GetLabels()
-	if labels != nil {
-		if _, ok := labels[nodeReuseLabelName]; ok {
-			delete(host.Labels, nodeReuseLabelName)
-			m.Log.Info("Finished deleting nodeReuseLabelName")
-		}
 	}
 
 	return nil
@@ -1988,48 +1911,6 @@ func (m *MachineManager) DissociateM3Metadata(ctx context.Context) error {
 	return deleteObject(ctx, m.client, metal3DataClaim)
 }
 
-// getControlPlaneName retrieves the ControlPlane object corresponding to the CAPI machine.
-func (m *MachineManager) getControlPlaneName(_ context.Context) (string, error) {
-	m.Log.Info("Fetching ControlPlane name")
-	if m.Machine == nil {
-		return "", errors.New("could not find corresponding machine object")
-	}
-	if m.Machine.ObjectMeta.OwnerReferences == nil {
-		return "", errors.New("machine owner reference is not populated")
-	}
-	for _, mOwnerRef := range m.Machine.ObjectMeta.OwnerReferences {
-		aGV, err := schema.ParseGroupVersion(mOwnerRef.APIVersion)
-		if err != nil {
-			return "", errors.New("failed to parse the group and version")
-		}
-		if aGV.Group != controlplanev1.GroupVersion.Group {
-			continue
-		}
-		// adding prefix to ControlPlane name in order to be able to differentiate
-		// ControlPlane and MachineDeployment in case they have the same names set in the cluster.
-		m.Log.Info("Fetched ControlPlane name", "controlPlane", "cp-"+mOwnerRef.Name)
-		return "cp-" + mOwnerRef.Name, nil
-	}
-	return "", errors.New("controlPlane name is not found")
-}
-
-// getMachineDeploymentName retrieves the MachineDeployment object name corresponding to the MachineSet.
-func (m *MachineManager) getMachineDeploymentName(ctx context.Context) (string, error) {
-	m.Log.Info("Fetching MachineDeployment name")
-	machineSet, err := m.getMachineSet(ctx)
-	if err != nil {
-		return "", err
-	}
-	if machineSet == nil {
-		return "", errors.New("machineSet is not accessible")
-	}
-	objRef := m.getMachineDeploymentRef(machineSet)
-	if objRef == nil {
-		return "", errors.New("machine deployment not mentioned in owner reference")
-	}
-	return "md-" + objRef.Name, nil
-}
-
 // getMachineSet retrieves the MachineSet object corresponding to the CAPI machine.
 func (m *MachineManager) getMachineSet(ctx context.Context) (*clusterv1.MachineSet, error) {
 	if m.Machine == nil {
@@ -2064,7 +1945,8 @@ func (m *MachineManager) getMachineSet(ctx context.Context) (*clusterv1.MachineS
 	return nil, nil //nolint:nilnil
 }
 
-// getMachineDeploymentRef retrieves a reference to the MachineDeployment from a MachineSet resource.
+// getMachineDeploymentRef gets an object reference pointing on the Machine deployment that
+// owns the underlying Machine resource.
 func (m *MachineManager) getMachineDeploymentRef(machineSet *clusterv1.MachineSet) *corev1.ObjectReference {
 	for _, owner := range machineSet.OwnerReferences {
 		if owner.Kind != "MachineDeployment" {
@@ -2088,11 +1970,13 @@ func (m *MachineManager) getMachineDeploymentRef(machineSet *clusterv1.MachineSe
 }
 
 func (m *MachineManager) getControlPlaneReference() *corev1.ObjectReference {
-	m.Log.Info("Fetching ControlPlane name")
+	m.Log.Info("Fetching ControlPlane reference")
 	if m.Machine == nil {
+		m.Log.V(VerbosityLevelTrace).Info("No machine")
 		return nil
 	}
 	if m.Machine.ObjectMeta.OwnerReferences == nil {
+		m.Log.V(VerbosityLevelTrace).Info("No owners")
 		return nil
 	}
 	for _, mOwnerRef := range m.Machine.ObjectMeta.OwnerReferences {
@@ -2104,23 +1988,24 @@ func (m *MachineManager) getControlPlaneReference() *corev1.ObjectReference {
 		if aGV.Group != controlplanev1.GroupVersion.Group {
 			continue
 		}
-		// adding prefix to ControlPlane name in order to be able to differentiate
-		// ControlPlane and MachineDeployment in case they have the same names set in the cluster.
-		m.Log.Info("Fetched ControlPlane name", "controlPlane", "cp-"+mOwnerRef.Name)
 		objRef := corev1.ObjectReference{
 			Namespace:  m.Machine.Namespace,
 			Name:       mOwnerRef.Name,
 			Kind:       mOwnerRef.Kind,
 			APIVersion: mOwnerRef.APIVersion,
 		}
+		m.Log.V(1).Info("Fetched ControlPlane", "controlPlane", objRef)
 		return &objRef
 	}
+	m.Log.Info("No suitable owner reference")
 	return nil
 }
 
-// getMetal3MachineTemplate retrieves the Metal3MachineTemplate object from Metal3Machine
+// getNodeReuserRef retrieves the object reference to the resource (MachineDeployment
+// or Controlplane) that declares through the associated Metal3MachineTemplate object
+// that it wants to reuse from Metal3Machine. The references are found
 // by traversing through the CAPI machine and its owner references.
-func (m *MachineManager) getMetal3MachineTemplate(ctx context.Context) (*infrav1.Metal3MachineTemplate, error) {
+func (m *MachineManager) getNodeReuserRef(ctx context.Context) (*corev1.ObjectReference, error) {
 	m.Log.Info("Fetching Metal3MachineTemplate")
 	if m.Machine == nil {
 		return nil, errors.New("could not find corresponding machine object")
@@ -2150,7 +2035,15 @@ func (m *MachineManager) getMetal3MachineTemplate(ctx context.Context) (*infrav1
 			return nil, fmt.Errorf("failed to get Metal3MachineTemplate from MachineSet: %w", err)
 		}
 		m.Log.Info("Fetched Metal3MachineTemplate from MachineSet", "metal3MachineTemplate", m3mt.Name)
-		return m3mt, nil
+		if ptr.Deref(m3mt.Spec.NodeReuse, false) {
+			objRef := m.getMachineDeploymentRef(machineSet)
+			// If the ownerRef is not found. It will not reappear.
+			if objRef == nil {
+				return nil, nil //nolint:nilnil
+			}
+			return objRef, nil
+		}
+		return nil, nil //nolint:nilnil
 	}
 
 	// This is a control plane machine. Get the controlPlane resource from the cluster and
@@ -2173,7 +2066,9 @@ func (m *MachineManager) getMetal3MachineTemplate(ctx context.Context) (*infrav1
 		Namespace: objRef.Namespace,
 	}
 	if err := m.client.Get(ctx, cpKey, cpObj); err != nil {
+		// No control-plane object. Cannot be recovered.
 		if apierrors.IsNotFound(err) {
+			m.Log.Info("No control plane", LogFieldControlPlane, objRef.Name, "Kind", objRef.Kind)
 			return nil, nil //nolint:nilnil
 		}
 		return nil, fmt.Errorf("failed to get controlPlane object %s %s: %w", objRef.Kind, objRef.Name, err)
@@ -2185,6 +2080,7 @@ func (m *MachineManager) getMetal3MachineTemplate(ctx context.Context) (*infrav1
 	m3mtName, found, err := unstructured.NestedString(cpObj.Object, "spec", "machineTemplate", "spec", "infrastructureRef", "name")
 	if err != nil || !found || m3mtName == "" {
 		// Impossible to recover. We must assume the control-plane is definitively non reachable.
+		m.Log.Info("No Metal3MachineTemplate specified in Control plane", LogFieldControlPlane, objRef.Name)
 		return nil, nil //nolint:nilnil,nilerr
 	}
 
@@ -2200,13 +2096,18 @@ func (m *MachineManager) getMetal3MachineTemplate(ctx context.Context) (*infrav1
 		Namespace: m3mtNamespace,
 	}
 	if err := m.client.Get(ctx, m3mtKey, m3mt); err != nil {
+		// Template does not exist. Cannot be recovered.
 		if apierrors.IsNotFound(err) {
+			m.Log.Info("Referenced m3machine template not found", LogFieldMetal3MachineTemplate, m3mtName, LogFieldNamespace, m3mtNamespace)
 			return nil, nil //nolint:nilnil
 		}
 		return nil, fmt.Errorf("failed to get Metal3MachineTemplate from control plane %s: %w", objRef.Kind, err)
 	}
-	m.Log.Info("Fetched Metal3MachineTemplate from control plane", "Kind", objRef.Kind, LogFieldMetal3MachineTemplate, m3mt.Name)
-	return m3mt, nil
+	m.Log.Info("Fetched Metal3MachineTemplate from control plane", "kind", objRef.Kind, LogFieldMetal3MachineTemplate, m3mt.Name)
+	if ptr.Deref(m3mt.Spec.NodeReuse, false) {
+		return objRef, nil
+	}
+	return nil, nil //nolint:nilnil
 }
 
 // getBmhNameFromM3Machine retrieves bmhName from m3m annotations.

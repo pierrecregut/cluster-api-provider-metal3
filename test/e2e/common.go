@@ -358,22 +358,6 @@ func AnnotateBmh(ctx context.Context, clusterClient client.Client, host bmov1alp
 	Expect(helper.Patch(ctx, bmh)).To(Succeed())
 }
 
-// DeleteNodeReuseLabelFromHost deletes nodeReuseLabelName from the host if it exists.
-func DeleteNodeReuseLabelFromHost(ctx context.Context, client client.Client, host bmov1alpha1.BareMetalHost, nodeReuseLabelName string) {
-	helper, err := patch.NewHelper(&host, client)
-	Expect(err).NotTo(HaveOccurred())
-	labels := host.GetLabels()
-	if labels != nil {
-		if _, ok := labels[nodeReuseLabelName]; ok {
-			delete(host.Labels, nodeReuseLabelName)
-			// A labelled host should have a consumer ref set to the cluster. This reference must
-			// be removed too otherwise the node will be unavailable to other consumers.
-			host.Spec.ConsumerRef = nil
-		}
-	}
-	Expect(helper.Patch(ctx, &host)).To(Succeed())
-}
-
 // ScaleMachineDeployment scales up/down MachineDeployment object to desired replicas.
 func ScaleMachineDeployment(ctx context.Context, clusterClient client.Client, clusterName, namespace string, newReplicas int) {
 	machineDeployments := framework.GetMachineDeploymentsByCluster(ctx, framework.GetMachineDeploymentsByClusterInput{

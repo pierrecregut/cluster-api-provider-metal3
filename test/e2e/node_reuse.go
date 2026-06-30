@@ -50,10 +50,6 @@ func NodeReuse(ctx context.Context, inputGetter func() NodeReuseInput) {
 		emptyTaint = []corev1.Taint{}
 	)
 
-	const (
-		nodeReuseLabel = "infrastructure.cluster.x-k8s.io/node-reuse"
-	)
-
 	Logf("KUBERNETES VERSION: %v", fromK8sVersion)
 	Logf("UPGRADED K8S VERSION: %v", toK8sVersion)
 	Logf("NUMBER OF CONTROLPLANE BMH: %v", numberOfControlplane)
@@ -327,15 +323,21 @@ func NodeReuse(ctx context.Context, inputGetter func() NodeReuseInput) {
 	By("Get the provisioned BMH names before starting upgrade in MachineDeployment [node_reuse]")
 	mdBmhBeforeUpgrade := getProvisionedBmhNames(ctx, input.Namespace, clusterClient)
 
-	By("List all available BMHs, remove nodeReuse label from them if any [node_reuse]")
+	By("List all available BMHs, remove nodeReuse consumerRef from them if any [node_reuse]")
 	bmhs := bmov1alpha1.BareMetalHostList{}
 	Expect(clusterClient.List(ctx, &bmhs, client.InNamespace(input.Namespace))).To(Succeed())
-	for _, item := range bmhs.Items {
-		if item.Status.Provisioning.State == bmov1alpha1.StateAvailable {
-			// We make sure that all available BMHs are choosable by removing nodeReuse label
-			// set on them while testing KCP node reuse scenario previously.
-			DeleteNodeReuseLabelFromHost(ctx, clusterClient, item, nodeReuseLabel)
+	for i := range bmhs.Items {
+		host := &bmhs.Items[i]
+		if host.Status.Provisioning.State != bmov1alpha1.StateAvailable {
+			continue
 		}
+		if host.Spec.ConsumerRef == nil || host.Spec.ConsumerRef.Kind == "Metal3Machine" {
+			continue
+		}
+		helper2, err2 := patch.NewHelper(host, clusterClient)
+		Expect(err2).NotTo(HaveOccurred())
+		host.Spec.ConsumerRef = nil
+		Expect(helper2.Patch(ctx, host)).To(Succeed())
 	}
 
 	// Verify labels were removed
@@ -344,7 +346,10 @@ func NodeReuse(ctx context.Context, inputGetter func() NodeReuseInput) {
 		g.Expect(clusterClient.List(ctx, &bmhs, client.InNamespace(input.Namespace))).To(Succeed())
 		for _, item := range bmhs.Items {
 			if item.Status.Provisioning.State == bmov1alpha1.StateAvailable {
-				g.Expect(item.Labels).NotTo(HaveKey(nodeReuseLabel))
+				if item.Spec.ConsumerRef != nil {
+					g.Expect(item.Spec.ConsumerRef.Kind).NotTo(Equal("MachineDeployment"))
+					g.Expect(item.Spec.ConsumerRef.Kind).NotTo(Equal("KubeadmControlPlane"))
+				}
 			}
 		}
 	}, 30*time.Second, 5*time.Second).Should(Succeed())
