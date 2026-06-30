@@ -8,6 +8,14 @@ spec:
   kubeadmConfigSpec:
     files:
     - content: |
+        [Service]
+        Environment="HTTP_PROXY=${HTTP_PROXY}"
+        Environment="HTTPS_PROXY=${HTTPS_PROXY}"
+        Environment="NO_PROXY=${NO_PROXY}"
+      owner: root:root
+      path: "${DROPIN_FOLDER}/proxy.conf"
+      permissions: "0755"
+    - content: |
         #!/bin/bash
         while :; do
           curl -sk https://127.0.0.1:6443/healthz 1>&2 > /dev/null
@@ -137,6 +145,14 @@ spec:
   template:
     spec:
       files:
+      - content: |
+          [Service]
+          Environment="HTTP_PROXY=${HTTP_PROXY}"
+          Environment="HTTPS_PROXY=${HTTPS_PROXY}"
+          Environment="NO_PROXY=${NO_PROXY}"
+        owner: root:root
+        path: "${DROPIN_FOLDER}/proxy.conf"
+        permissions: "0755"
       - content: |
           network:
             version: 2

@@ -81,7 +81,7 @@ spec:
           prefix: 0
     services:
       dns:
-      - 8.8.8.8
+      - "${EXTERNAL_DNS}"
 ---
 apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster

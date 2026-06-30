@@ -276,6 +276,11 @@ variables:
   FKAS_RELEASE_LATEST: "data/fkas"
   REPO_NAME: "${REPO_NAME:-cluster-api-provider-metal3}"
   EXP_MACHINE_TAINT_PROPAGATION: "true"
+  HTTP_PROXY: "${http_proxy:-}"
+  HTTPS_PROXY: "${https_proxy:-}"
+  NO_PROXY: "${no_proxy:-}"
+  DROPIN_FOLDER: "${DROPIN_FOLDER:-/tmp}"
+  EXTERNAL_DNS: "${EXTERNAL_DNS:-8.8.8.8}"
 
 intervals:
   default/wait-controllers: [ "10m", "10s" ]
