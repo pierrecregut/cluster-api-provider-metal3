@@ -666,6 +666,68 @@ var _ = Describe("Metal3Machine Manager targeting HostClaims", func() {
 			},
 		}),
 	)
+
+	type testCaseIsProvisioned struct {
+		M3Machine *infrav1.Metal3Machine
+		HostClaim *bmov1alpha1.HostClaim
+		GetError  error
+		Expected  bool
+	}
+
+	DescribeTable("IsBaremetalHostProvisioned",
+		func(tc testCaseIsProvisioned) {
+			ctx := context.TODO()
+			objects := []client.Object{tc.M3Machine}
+			if tc.HostClaim != nil {
+				objects = append(objects, tc.HostClaim)
+			}
+			builder := fake.NewClientBuilder().WithScheme(setupSchemeMm()).WithObjects(objects...)
+			if tc.GetError != nil {
+				builder = builder.WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+						if _, ok := obj.(*bmov1alpha1.HostClaim); ok {
+							return tc.GetError
+						}
+						return nil
+					},
+				})
+			}
+			fakeClient := builder.Build()
+
+			machineMgr, err := NewMachineHostClaimManager(
+				ctx, fakeClient, MockRemoteContext(), newCluster(clusterName), nil,
+				newMachine(machineName, nil), tc.M3Machine, GinkgoLogr,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(machineMgr.IsBaremetalHostProvisioned(ctx)).To(Equal(tc.Expected))
+		},
+		Entry("Ready condition True returns true", testCaseIsProvisioned{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).WithCondition(clusterv1.ReadyCondition, metav1.ConditionTrue).Build(),
+			Expected:  true,
+		}),
+		Entry("Ready condition False returns false", testCaseIsProvisioned{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).WithCondition(clusterv1.ReadyCondition, metav1.ConditionFalse).Build(),
+			Expected:  false,
+		}),
+		Entry("HostClaim with no Ready condition returns false", testCaseIsProvisioned{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).Build(),
+			Expected:  false,
+		}),
+		Entry("No HostClaim at all returns false", testCaseIsProvisioned{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			Expected:  false,
+		}),
+		Entry("Get error returns false", testCaseIsProvisioned{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).WithCondition(clusterv1.ReadyCondition, metav1.ConditionTrue).Build(),
+			GetError:  errors.New("transient"),
+			Expected:  false,
+		}),
+	)
 })
 
 // MockRemote implements the RemoteClientCache interface.
@@ -748,6 +810,16 @@ func (hb *HostClaimBuilder) WithDeletionTimestamp() *HostClaimBuilder {
 
 func (hb *HostClaimBuilder) WithConsumerRef(ref *corev1.ObjectReference) *HostClaimBuilder {
 	hb.hostclaim.Spec.ConsumerRef = ref
+	return hb
+}
+
+func (hb *HostClaimBuilder) WithCondition(t string, status metav1.ConditionStatus) *HostClaimBuilder {
+	hb.hostclaim.Status.Conditions = append(hb.hostclaim.Status.Conditions, metav1.Condition{
+		Type:               t,
+		Status:             status,
+		LastTransitionTime: metav1.Now(),
+		Reason:             "Test",
+	})
 	return hb
 }
 

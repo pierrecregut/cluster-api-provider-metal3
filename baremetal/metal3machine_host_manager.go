@@ -31,6 +31,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
+	"sigs.k8s.io/cluster-api/util/conditions"
 	"sigs.k8s.io/cluster-api/util/patch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -89,7 +90,6 @@ func NewMachineHostClaimManager(ctx context.Context, localClient client.Client, 
 // The following functions are inherited from the metal3machine manager
 // * SetFinalizer sets finalizer
 // * UnsetFinalizer unsets finalizer
-// * IsProvisioned checks if the metal3machine is provisioned.
 // * IsBootstrapReady checks if the machine is given Bootstrap data.
 // * GetProviderIDAndBMHID returns providerID and bmhID.
 // * SetProviderID sets the metal3 provider ID on the Metal3Machine.
@@ -592,6 +592,22 @@ func (m *MachineHostClaimManager) setHostClaimConsumerRef(_ context.Context, hos
 		}
 	}
 	return nil
+}
+
+// IsBaremetalHostProvisioned returns true if the HostClaim Ready condition is true.
+// This occurs only if the underlying Provisioned mirroring the baremetalhost condition is true.
+func (m *MachineHostClaimManager) IsBaremetalHostProvisioned(ctx context.Context) bool {
+	m.Log.V(VerbosityLevelDebug).Info("checking through hostclaim if underlying baremetalhost is provisioned")
+	host, _, err := m.getHostClaim(ctx)
+	if err != nil {
+		m.Log.V(VerbosityLevelDebug).Info("failed to get host", "err", err)
+		return false
+	}
+	if host == nil {
+		m.Log.V(VerbosityLevelDebug).Info("getHost returned nil")
+		return false
+	}
+	return conditions.IsTrue(host, clusterv1.ReadyCondition)
 }
 
 // getBmhUIDFromM3Machine retrieves bmhUID from m3m.
