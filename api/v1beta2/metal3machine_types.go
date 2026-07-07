@@ -65,6 +65,9 @@ const (
 	// AssociateBareMetalHostSuccessReason surfaces when the Metal3Machine is successfully associated with a BareMetalHost.
 	AssociateBareMetalHostSuccessReason = "AssociateBareMetalHostSuccess"
 
+	// AssociateHostClaimSuccessReason surfaces when the Metal3Machine is successfully associated with a HostClaim.
+	AssociateHostClaimSuccessReason = "AssociateHostClaimSuccess"
+
 	// AssociateBareMetalHostViaNodeReuseSuccessReason surfaces when the Metal3Machine is successfully associated with a BareMetalHost via node reuse.
 	AssociateBareMetalHostViaNodeReuseSuccessReason = "AssociateBareMetalHostViaNodeReuseSuccess"
 

@@ -25,10 +25,14 @@ import (
 	infrav1 "github.com/metal3-io/cluster-api-provider-metal3/api/v1beta2"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 )
 
@@ -175,6 +179,272 @@ var _ = Describe("Metal3Machine Manager targeting HostClaims", func() {
 		Expect(cond[0].Status).To(Equal(metav1.ConditionFalse))
 		Expect(cond[0].Reason).To(Equal(infrav1.RemoteClusterUnavailableReason))
 	})
+
+	// setHostSpec
+	// ensureAnnotation
+	// translateHostRequirements
+
+	var (
+		defaultImage = &infrav1.Image{
+			URL:          testImageURL,
+			Checksum:     ptr.To(testImageChecksumURL),
+			ChecksumType: "sha512",
+			DiskFormat:   testImageDiskFormat,
+		}
+	)
+
+	type testCaseProvideHostClaim struct {
+		m3machine          *infrav1.Metal3Machine
+		useRemoteClient    bool
+		expectError        bool
+		expectNamespace    string
+		expectConsumerKind string
+		expectOwnerRef     bool
+		expectMatchLabels  map[string]string
+		expectFailureDom   string
+	}
+
+	DescribeTable("provideHostClaim",
+		func(tc testCaseProvideHostClaim) {
+			if tc.useRemoteClient {
+				tc.m3machine.Spec.IdentityRef = infrav1.IdentityRef{Name: "kb"}
+			}
+			remoteClientCache := MockRemoteContext()
+			fakeClient := fake.NewClientBuilder().WithScheme(setupSchemeMm()).WithObjects(tc.m3machine).Build()
+			cluster := newCluster(clusterName)
+			machine := &clusterv1.Machine{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      machineName,
+					Namespace: namespaceName,
+				},
+				Spec: clusterv1.MachineSpec{
+					ClusterName: clusterName,
+				},
+			}
+
+			m3manager, err := NewMachineHostClaimManager(
+				context.TODO(), fakeClient, remoteClientCache,
+				cluster, nil, machine, tc.m3machine, GinkgoLogr)
+			Expect(err).NotTo(HaveOccurred())
+
+			hostClaim, helper, err := m3manager.provideHostClaim(context.TODO())
+			if tc.expectError {
+				Expect(err).To(HaveOccurred())
+				return
+			}
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hostClaim).NotTo(BeNil())
+			Expect(helper).NotTo(BeNil())
+
+			Expect(hostClaim.Name).To(Equal(tc.m3machine.Name))
+			Expect(hostClaim.Namespace).To(Equal(tc.expectNamespace))
+
+			Expect(hostClaim.Spec.ConsumerRef).NotTo(BeNil())
+			Expect(hostClaim.Spec.ConsumerRef.Name).To(Equal(tc.m3machine.Name))
+			Expect(hostClaim.Spec.ConsumerRef.Kind).To(Equal(tc.expectConsumerKind))
+
+			Expect(hostClaim.Spec.PoweredOn).To(BeFalse())
+			Expect(hostClaim.Spec.FailureDomain).To(Equal(tc.expectFailureDom))
+
+			Expect(hostClaim.Labels).NotTo(BeNil())
+			Expect(hostClaim.Labels[clusterv1.ClusterNameLabel]).To(Equal(clusterName))
+
+			if tc.expectMatchLabels != nil {
+				Expect(hostClaim.Spec.HostSelector.MatchLabels).To(Equal(tc.expectMatchLabels))
+			}
+
+			if tc.expectOwnerRef {
+				hasOwnerRef, err := controllerutil.HasOwnerReference(
+					hostClaim.OwnerReferences, cluster, fakeClient.Scheme())
+				Expect(err).NotTo(HaveOccurred())
+				Expect(hasOwnerRef).To(BeTrue())
+			} else {
+				Expect(hostClaim.OwnerReferences).To(BeEmpty())
+			}
+		},
+		Entry("local client creates hostclaim with owner ref", testCaseProvideHostClaim{
+			m3machine: NewM3MBuilder(metal3machineName, namespaceName).
+				InNamespace("").Build(),
+			useRemoteClient:    false,
+			expectNamespace:    namespaceName,
+			expectConsumerKind: metal3MachineKind,
+			expectOwnerRef:     true,
+		}),
+		Entry("remote client creates hostclaim without owner ref", testCaseProvideHostClaim{
+			m3machine: NewM3MBuilder(metal3machineName, namespaceName).
+				InNamespace("").Build(),
+			useRemoteClient:    true,
+			expectNamespace:    remoteNs,
+			expectConsumerKind: remoteMetal3MachineKind,
+			expectOwnerRef:     false,
+		}),
+		Entry("hostclaim with match labels and failure domain", testCaseProvideHostClaim{
+			m3machine: NewM3MBuilder(metal3machineName, namespaceName).
+				InNamespace("").FailureDomain("zone").HostSelector(&infrav1.HostSelector{MatchLabels: map[string]string{"k": "v"}}).Build(),
+			useRemoteClient:    false,
+			expectNamespace:    namespaceName,
+			expectConsumerKind: metal3MachineKind,
+			expectOwnerRef:     true,
+			expectMatchLabels:  map[string]string{"k": "v"},
+			expectFailureDom:   "zone",
+		}),
+		Entry("hostclaim with match expressions", testCaseProvideHostClaim{
+			m3machine: NewM3MBuilder(metal3machineName, namespaceName).
+				InNamespace("").
+				HostSelector(&infrav1.HostSelector{MatchExpressions: []infrav1.HostSelectorRequirement{
+					{Key: "l", Operator: "In", Values: []string{"v"}},
+				}}).Build(),
+			useRemoteClient:    false,
+			expectNamespace:    namespaceName,
+			expectConsumerKind: metal3MachineKind,
+			expectOwnerRef:     true,
+		}),
+	)
+
+	// setHostConsumerRef
+	// Associate
+	type testCaseAssociate struct {
+		Machine            *clusterv1.Machine
+		Host               *bmov1alpha1.HostClaim
+		M3Machine          *infrav1.Metal3Machine
+		DataTemplate       *infrav1.Metal3DataTemplate
+		Data               *infrav1.Metal3Data
+		ExpectRequeue      bool
+		ExpectClusterLabel bool
+		ExpectOwnerRef     bool
+	}
+
+	DescribeTable("Test Associate function",
+		func(tc testCaseAssociate) {
+			mset := &clusterv1.MachineSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "machineset", Namespace: tc.Machine.Namespace},
+				Spec: clusterv1.MachineSetSpec{
+					Template: clusterv1.MachineTemplateSpec{
+						Spec: clusterv1.MachineSpec{
+							InfrastructureRef: clusterv1.ContractVersionedObjectReference{
+								Name:     "template",
+								Kind:     "Metal3Machine",
+								APIGroup: "metal3.io",
+							},
+						},
+					},
+				},
+			}
+			template := &infrav1.Metal3MachineTemplate{
+				ObjectMeta: metav1.ObjectMeta{Name: "template", Namespace: tc.Machine.Namespace},
+			}
+			err := controllerutil.SetOwnerReference(mset, tc.Machine, setupSchemeMm())
+			Expect(err).NotTo(HaveOccurred())
+			objects := []client.Object{
+				tc.M3Machine,
+				tc.Machine,
+				mset,
+				template,
+			}
+			if tc.Host != nil {
+				objects = append(objects, tc.Host)
+			}
+			if tc.DataTemplate != nil {
+				objects = append(objects, tc.DataTemplate)
+			}
+			if tc.Data != nil {
+				objects = append(objects, tc.Data)
+			}
+			fakeClient := fake.NewClientBuilder().WithScheme(setupSchemeMm()).WithObjects(objects...).Build()
+
+			mockRemoteClientCache := MockRemoteContext()
+			machineMgr, err := NewMachineHostClaimManager(context.TODO(), fakeClient, mockRemoteClientCache, newCluster(clusterName), nil, tc.Machine,
+				tc.M3Machine, GinkgoLogr,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			_, err = machineMgr.Associate(context.TODO())
+			if tc.ExpectRequeue {
+				var reconcileError ReconcileError
+				ok := errors.As(err, &reconcileError)
+				Expect(ok).To(BeTrue())
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// get the saved host
+			hostClaim := bmov1alpha1.HostClaim{}
+			err = fakeClient.Get(context.TODO(),
+				client.ObjectKey{
+					Name:      tc.M3Machine.Name,
+					Namespace: tc.M3Machine.Namespace,
+				},
+				&hostClaim,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			hasOwnerRef, err := controllerutil.HasOwnerReference(hostClaim.OwnerReferences, machineMgr.Cluster, machineMgr.client.Scheme())
+			Expect(err).NotTo(HaveOccurred())
+			Expect(hasOwnerRef).To(Equal(tc.ExpectOwnerRef))
+			if tc.ExpectClusterLabel {
+				Expect(err).NotTo(HaveOccurred())
+				Expect(hostClaim.Labels).NotTo(BeNil())
+				Expect(hostClaim.Labels[clusterv1.ClusterNameLabel]).To(Equal(tc.Machine.Spec.ClusterName))
+			}
+		},
+		Entry("Associate empty machine, Metal3 machine spec limited to InNamespace",
+			testCaseAssociate{
+				Machine:        newMachine("", nil),
+				M3Machine:      NewM3MBuilder(metal3machineName, namespaceName).InNamespace("").WithClaimAnnotation(hostClaimName).Build(),
+				ExpectRequeue:  false,
+				ExpectOwnerRef: true,
+			},
+		),
+
+		Entry("Associate empty machine, Metal3 machine spec set",
+			testCaseAssociate{
+				Machine: newMachine("", nil),
+				M3Machine: NewM3MBuilder(metal3machineName, namespaceName).InNamespace("").
+					UserData(metal3machineName + "-user-data").Image(defaultImage).WithClaimAnnotation(hostClaimName).Build(),
+				ExpectRequeue:  false,
+				ExpectOwnerRef: true,
+			},
+		),
+		Entry("Associate machine with DataTemplate missing",
+			testCaseAssociate{
+				Machine: newMachine(machineName, nil),
+				M3Machine: NewM3MBuilder(metal3machineName, namespaceName).InNamespace("").
+					UserData(metal3machineName + "-user-data").Image(defaultImage).WithClaimAnnotation(hostClaimName).
+					DataTemplate("abcd").Build(),
+				ExpectClusterLabel: true,
+				ExpectRequeue:      false,
+				ExpectOwnerRef:     true,
+			},
+		),
+		Entry("Associate machine with DataTemplate and Data ready",
+			testCaseAssociate{
+				Machine: newMachine(machineName, nil),
+				M3Machine: NewM3MBuilder(metal3machineName, namespaceName).InNamespace("").
+					UserData(metal3machineName + "-user-data").Image(defaultImage).WithClaimAnnotation(hostClaimName).
+					DataTemplate("abcd").RenderedData("abcd-0").Build(),
+				Data: &infrav1.Metal3Data{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "abcd-0",
+						Namespace: namespaceName,
+					},
+					Spec: infrav1.Metal3DataSpec{
+						MetaData: &corev1.SecretReference{
+							Name: "metadata",
+						},
+						NetworkData: &corev1.SecretReference{
+							Name: "networkdata",
+						},
+					},
+					Status: infrav1.Metal3DataStatus{
+						Ready: ptr.To(true),
+					},
+				},
+				ExpectClusterLabel: true,
+				ExpectRequeue:      false,
+				ExpectOwnerRef:     true,
+			},
+		),
+	)
+
 })
 
 // MockRemote implements the RemoteClientCache interface.
@@ -245,4 +515,86 @@ func (hb *HostClaimBuilder) WithBareMetalHost(name string, namespace string, uid
 		UID:       uid,
 	}
 	return hb
+}
+
+type M3MBuilder struct {
+	metal3machine infrav1.Metal3Machine
+}
+
+func NewM3MBuilder(name string, namespace string) *M3MBuilder {
+	return &M3MBuilder{
+		metal3machine: infrav1.Metal3Machine{
+			TypeMeta: metav1.TypeMeta{
+				Kind:       "Metal3Machine",
+				APIVersion: infrav1.GroupVersion.String(),
+			},
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
+			},
+		},
+	}
+}
+
+func (mb *M3MBuilder) Build() *infrav1.Metal3Machine {
+	return &mb.metal3machine
+}
+
+func (mb *M3MBuilder) InNamespace(ns string) *M3MBuilder {
+	if mb.metal3machine.Spec.HostSelector == nil {
+		mb.metal3machine.Spec.HostSelector = &infrav1.HostSelector{}
+	}
+	mb.metal3machine.Spec.HostSelector.InNamespace = ns
+	return mb
+}
+
+func (mb *M3MBuilder) WithClaimAnnotation(name string) *M3MBuilder {
+	if mb.metal3machine.Annotations == nil {
+		mb.metal3machine.Annotations = map[string]string{}
+	}
+	mb.metal3machine.Annotations[HostClaimAnnotation] = name
+	return mb
+}
+
+func (mb *M3MBuilder) ProviderID(pid string) *M3MBuilder {
+	mb.metal3machine.Spec.ProviderID = pid
+	return mb
+}
+
+func (mb *M3MBuilder) Image(img *infrav1.Image) *M3MBuilder {
+	mb.metal3machine.Spec.Image = *img
+	return mb
+}
+
+func (mb *M3MBuilder) FailureDomain(zone string) *M3MBuilder {
+	mb.metal3machine.Spec.FailureDomain = zone
+	return mb
+}
+
+func (mb *M3MBuilder) HostSelector(hs *infrav1.HostSelector) *M3MBuilder {
+	mb.metal3machine.Spec.HostSelector = hs
+	return mb
+}
+
+func (mb *M3MBuilder) UserData(name string) *M3MBuilder {
+	mb.metal3machine.Spec.UserData = &corev1.SecretReference{
+		Name: name,
+	}
+	return mb
+}
+
+func (mb *M3MBuilder) RenderedData(name string) *M3MBuilder {
+	mb.metal3machine.Status.RenderedData = &infrav1.Metal3ObjectRef{
+		Name:      name,
+		Namespace: mb.metal3machine.Namespace,
+	}
+	return mb
+}
+
+func (mb *M3MBuilder) DataTemplate(name string) *M3MBuilder {
+	mb.metal3machine.Spec.DataTemplate = &infrav1.Metal3ObjectRef{
+		Name:      name,
+		Namespace: mb.metal3machine.Namespace,
+	}
+	return mb
 }

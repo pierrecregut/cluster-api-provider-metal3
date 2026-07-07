@@ -44,6 +44,9 @@ const (
 	metal3MachineKind = "Metal3Machine"
 	// metal3DataClaimKind is the Kind of the Metal3DataClaim.
 	metal3DataClaimKind = "Metal3DataClaim"
+	// remoteMetal3MachineKind is a pseudo kind used when the consumer reference
+	// is not in the same cluster.
+	remoteMetal3MachineKind = "RemoteMetal3Machine"
 
 	// Logging verbosity levels follow the Kubernetes logging conventions:
 	// - Level 0 (Info): Always logged - errors, warnings, important state changes
