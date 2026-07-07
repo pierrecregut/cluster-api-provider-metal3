@@ -26,12 +26,15 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 )
@@ -559,6 +562,110 @@ var _ = Describe("Metal3Machine Manager targeting HostClaims", func() {
 			ExpectRequeue: true,
 		}),
 	)
+
+	type testCaseDelete struct {
+		M3Machine         *infrav1.Metal3Machine
+		HostClaim         *bmov1alpha1.HostClaim
+		DeleteInterceptor func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.DeleteOption) error
+		ExpectRequeue     bool
+		ExpectError       bool
+		ExpectNoHostClaim bool
+	}
+
+	DescribeTable("Test Delete function",
+		func(tc testCaseDelete) {
+			ctx := context.TODO()
+			objects := []client.Object{tc.M3Machine}
+			if tc.HostClaim != nil {
+				objects = append(objects, tc.HostClaim)
+			}
+			builder := fake.NewClientBuilder().WithScheme(setupSchemeMm()).WithObjects(objects...)
+			if tc.DeleteInterceptor != nil {
+				builder = builder.WithInterceptorFuncs(interceptor.Funcs{Delete: tc.DeleteInterceptor})
+			}
+			fakeClient := builder.Build()
+
+			machineMgr, err := NewMachineHostClaimManager(
+				ctx, fakeClient, MockRemoteContext(), newCluster(clusterName), nil,
+				newMachine(machineName, nil), tc.M3Machine, GinkgoLogr,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = machineMgr.Delete(ctx)
+			switch {
+			case tc.ExpectRequeue:
+				var reconcileError ReconcileError
+				Expect(errors.As(err, &reconcileError)).To(BeTrue())
+			case tc.ExpectError:
+				Expect(err).To(HaveOccurred())
+			default:
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			if tc.HostClaim != nil {
+				hostClaim := &bmov1alpha1.HostClaim{}
+				getErr := fakeClient.Get(ctx,
+					client.ObjectKey{Name: tc.HostClaim.Name, Namespace: tc.HostClaim.Namespace},
+					hostClaim)
+				if tc.ExpectNoHostClaim {
+					Expect(apierrors.IsNotFound(getErr)).To(BeTrue())
+				} else {
+					Expect(getErr).NotTo(HaveOccurred())
+				}
+			}
+		},
+		Entry("HostClaim already gone - no annotation", testCaseDelete{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).Build(),
+		}),
+		Entry("HostClaim present - Delete succeeds and requeues", testCaseDelete{
+			M3Machine:         NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim:         NewHostClaimBuilder(hostClaimName, localNs).Build(),
+			ExpectRequeue:     true,
+			ExpectNoHostClaim: true,
+		}),
+		Entry("HostClaim already deleting - skip Delete and requeue", testCaseDelete{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).WithDeletionTimestamp().Build(),
+			DeleteInterceptor: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.DeleteOption) error {
+				if _, ok := obj.(*bmov1alpha1.HostClaim); ok {
+					Fail("Delete must not be called when the HostClaim is already deleting")
+				}
+				return nil
+			},
+			ExpectRequeue: true,
+		}),
+		Entry("HostClaim disappeared between Get and Delete - swallow NotFound", testCaseDelete{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).Build(),
+			DeleteInterceptor: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.DeleteOption) error {
+				return apierrors.NewNotFound(schema.GroupResource{Group: bmov1alpha1.GroupVersion.Group, Resource: "hostclaims"}, obj.GetName())
+			},
+		}),
+		Entry("HostClaim Delete fails with a non-NotFound error", testCaseDelete{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).Build(),
+			DeleteInterceptor: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.DeleteOption) error {
+				return errors.New("transient")
+			},
+			ExpectError: true,
+		}),
+		Entry("Quarantined HostClaim is left alone", testCaseDelete{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).
+				WithConsumerRef(&corev1.ObjectReference{
+					Kind:       "OtherKind",
+					Name:       hostClaimName,
+					Namespace:  localNs,
+					APIVersion: "other/v1",
+				}).Build(),
+			DeleteInterceptor: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.DeleteOption) error {
+				if _, ok := obj.(*bmov1alpha1.HostClaim); ok {
+					Fail("Delete must not touch a HostClaim not owned any more")
+				}
+				return nil
+			},
+		}),
+	)
 })
 
 // MockRemote implements the RemoteClientCache interface.
@@ -628,6 +735,19 @@ func (hb *HostClaimBuilder) WithBareMetalHost(name string, namespace string, uid
 		Namespace: namespace,
 		UID:       uid,
 	}
+	return hb
+}
+
+func (hb *HostClaimBuilder) WithDeletionTimestamp() *HostClaimBuilder {
+	now := metav1.Now()
+	hb.hostclaim.DeletionTimestamp = &now
+	// A DeletionTimestamp requires a finalizer for the fake client to accept it.
+	hb.hostclaim.Finalizers = append(hb.hostclaim.Finalizers, "test.metal3.io/hold")
+	return hb
+}
+
+func (hb *HostClaimBuilder) WithConsumerRef(ref *corev1.ObjectReference) *HostClaimBuilder {
+	hb.hostclaim.Spec.ConsumerRef = ref
 	return hb
 }
 

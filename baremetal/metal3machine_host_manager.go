@@ -153,6 +153,55 @@ func (m *MachineHostClaimManager) Associate(ctx context.Context) (string, error)
 	return infrav1.AssociateHostClaimSuccessReason, nil
 }
 
+// Delete deletes a metal3 machine and is invoked by the Machine Controller.
+// All the burden (deprovisioning) is on the HostClaim controller and fields
+// are left as they are in the hostclaim.
+// The finalizer will be removed in the controller only when the HostClaim
+// disappears.
+func (m *MachineHostClaimManager) Delete(ctx context.Context) error {
+	m.Log.Info("Deleting metal3 machine")
+	hostClaim, _, err := m.getHostClaim(ctx)
+	if err != nil {
+		return err
+	}
+	if hostClaim == nil {
+		m.Log.Info("hostclaim not found for metal3machine")
+		if m.remoteClient != nil {
+			m.remoteClient.Release(m.Metal3Machine)
+		}
+		return nil
+	}
+
+	// If owned by somebody else, stop here and release the remoteClient.
+	if hostClaim.Spec.ConsumerRef != nil && !consumerRefMatches(hostClaim.Spec.ConsumerRef, m.Metal3Machine) {
+		m.Log.Info("hostclaim no longer references this metal3machine; releasing finalizer",
+			LogFieldHostClaim, hostClaim.Name, LogFieldHostClaimNamespace, hostClaim.Namespace)
+		if m.remoteClient != nil {
+			m.remoteClient.Release(m.Metal3Machine)
+		}
+		return nil
+	}
+
+	hostClient := m.client
+	if m.remoteClient != nil {
+		hostClient = m.remoteClient
+	}
+	if hostClaim.DeletionTimestamp.IsZero() {
+		err = hostClient.Delete(ctx, hostClaim)
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				// Somebody removed the claim in the meantime
+				return nil
+			}
+			m.Log.Error(err, "cannot delete associated hostClaim",
+				LogFieldHostClaim, hostClaim.Name, LogFieldHostClaimNamespace, hostClaim.Namespace)
+			return err
+		}
+	}
+	err = errors.New("waiting for associated HostClaim deletion")
+	return WithTransientError(err, requeueAfter)
+}
+
 // Update updates a machine and is invoked by the Machine Controller.
 func (m *MachineHostClaimManager) Update(ctx context.Context) error {
 	m.Log.Info("Updating machine")
