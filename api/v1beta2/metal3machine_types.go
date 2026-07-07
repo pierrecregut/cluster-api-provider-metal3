@@ -55,6 +55,10 @@ const (
 	// AssociateBareMetalHostCondition documents the status of the association of Metal3Machine with a BareMetalHost.
 	AssociateBareMetalHostCondition = "AssociateBareMetalHost"
 
+	// RemoteClusterUnvailableReason documents any error during the creation of a client to access the remote cluster
+	// where HostClaims should be created.
+	RemoteClusterUnavailableReason = "RemoteClusterUnavailable"
+
 	// AssociateBareMetalHostFailedReason documents any errors while associating Metal3Machine with a BareMetalHost.
 	AssociateBareMetalHostFailedReason = "AssociateBareMetalHostFailed"
 
