@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"time"
 
 	"github.com/go-logr/logr"
 	bmov1alpha1 "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
@@ -29,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/conditions"
@@ -39,6 +41,9 @@ import (
 
 const (
 	HostClaimAnnotation = "metal3.io/hostclaim"
+	// nodeReuseCleared is set on a kept HostClaim when it is cleared during
+	// Delete, as an RFC3339 timestamp for debugging / observability only.
+	nodeReuseCleared = "infrastructure.cluster.x-k8s.io/node-reuse-cleared-at"
 )
 
 // MachineHostClaimManager is responsible for performing machine reconciliation.
@@ -160,7 +165,7 @@ func (m *MachineHostClaimManager) Associate(ctx context.Context) (string, error)
 // disappears.
 func (m *MachineHostClaimManager) Delete(ctx context.Context) error {
 	m.Log.Info("Deleting metal3 machine")
-	hostClaim, _, err := m.getHostClaim(ctx)
+	hostClaim, helper, err := m.getHostClaim(ctx)
 	if err != nil {
 		return err
 	}
@@ -180,6 +185,50 @@ func (m *MachineHostClaimManager) Delete(ctx context.Context) error {
 			m.remoteClient.Release(m.Metal3Machine)
 		}
 		return nil
+	}
+
+	// Proceeds like standard metalmachine_manager:
+	// * if the cluster is being deleted, perform standard deletion
+	// * otherwise if nodeReuse is enabled, get the owner of the machine (Control-plane
+	//   or MachineDeployment) and use it as a ConsumerRef.
+	// * Keep the HostClaim but change its ConsumerRef.
+	if m.Cluster != nil && m.Cluster.DeletionTimestamp.IsZero() {
+		nodeReuserRef, nrErr := m.getNodeReuserRef(ctx)
+		if nrErr != nil {
+			return fmt.Errorf("cannot get node reuser reference: %w", nrErr)
+		}
+		if nodeReuserRef != nil {
+			// Only act once: if the HostClaim's ConsumerRef still points at us,
+			// clear its provisioning content and retarget it at the owner.
+			if consumerRefMatches(hostClaim.Spec.ConsumerRef, m.Metal3Machine) {
+				m.Log.Info("Clearing hostClaim (node reuse mode)",
+					"nodeReuserKind", nodeReuserRef.Kind,
+					"nodeReuserName", nodeReuserRef.Name)
+				// We clear the spec. The metadata (label and owner reference to the cluster) stays untouched.
+				// The hostclaim is still part of the cluster as the control-plane or the machine deployment
+				// are subpart of it.
+				hostClaim.Spec.Image = nil
+				hostClaim.Spec.UserData = nil
+				hostClaim.Spec.NetworkData = nil
+				hostClaim.Spec.MetaData = nil
+				hostClaim.Spec.PoweredOn = false
+				if hostClaim.Annotations == nil {
+					hostClaim.Annotations = map[string]string{}
+				}
+				// Annotation can be used to clear hostclaim never reused (scale down)
+				hostClaim.Annotations[nodeReuseCleared] = time.Now().UTC().Format(time.RFC3339)
+				hostClaim.Spec.ConsumerRef = nodeReuserRef
+				if err = helper.Patch(ctx, hostClaim); err != nil {
+					m.Log.Error(err, "Failed to retarget hostClaim ConsumerRef to node reuser")
+					return err
+				}
+				// Requeue until the HostClaim is no longer bound to the Metal3Machine
+				// the finalizer can then be released.
+				return WithTransientError(errors.New("waiting for reusable hostClaim release"), requeueAfter)
+			}
+			// Already retargeted (or never ours); nothing more to do here.
+			return nil
+		}
 	}
 
 	hostClient := m.client
@@ -456,7 +505,40 @@ func (m *MachineHostClaimManager) provideHostClaim(ctx context.Context) (*bmov1a
 		selector.MatchExpressions = translateHostRequirements(hostSelector.MatchExpressions)
 		selector.InNamespace = hostSelector.InNamespace
 	}
+	nodeReuserRef, err := m.getNodeReuserRef(ctx)
+	if err != nil {
+		m.Log.Error(err, "Error resolving node reuser reference")
+		return nil, nil, err
+	}
 	var hostclaim *bmov1alpha1.HostClaim
+
+	if nodeReuserRef != nil {
+		hostclaim, err = m.findReusableHostClaim(ctx, hostClient, namespace, nodeReuserRef)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if hostclaim != nil {
+		m.Log.Info("Reusing host", "host", hostclaim.Name, "namespace", hostclaim.Namespace)
+		if err = m.setHostClaimConsumerRef(ctx, hostclaim); err != nil {
+			return nil, nil, err
+		}
+		if hostclaim.Annotations != nil {
+			delete(hostclaim.Annotations, nodeReuseCleared)
+		}
+		if hostclaim.Labels == nil {
+			hostclaim.Labels = map[string]string{}
+		}
+		hostclaim.Labels[clusterv1.ClusterNameLabel] = m.Machine.Spec.ClusterName
+		hostclaim.Spec.HostSelector = selector
+		hostclaim.Spec.FailureDomain = m.Metal3Machine.Spec.FailureDomain
+		if err = hostClient.Update(ctx, hostclaim); err != nil {
+			m.Log.Error(err, "Cannot bind to a reusable host")
+			return nil, nil, err
+		}
+		helper, errPatch := patch.NewHelper(hostclaim, hostClient)
+		return hostclaim, helper, errPatch
+	}
 
 	// We must create a new hostClaim either because we are not in node
 	// reuse mode or we did not find a node to reuse.
@@ -467,11 +549,11 @@ func (m *MachineHostClaimManager) provideHostClaim(ctx context.Context) (*bmov1a
 			Namespace: namespace,
 		},
 	}
-	_, err := controllerutil.CreateOrUpdate(
+	_, err = controllerutil.CreateOrUpdate(
 		ctx, hostClient, hostclaim,
 		func() error {
 			if hostclaim.Labels == nil {
-				hostclaim.Labels = make(map[string]string)
+				hostclaim.Labels = map[string]string{}
 			}
 			hostclaim.Labels[clusterv1.ClusterNameLabel] = m.Machine.Spec.ClusterName
 			hostclaim.Spec.HostSelector = selector
@@ -484,6 +566,64 @@ func (m *MachineHostClaimManager) provideHostClaim(ctx context.Context) (*bmov1a
 	}
 	helper, err := patch.NewHelper(hostclaim, hostClient)
 	return hostclaim, helper, err
+}
+
+// findReusableHostClaim looks for a HostClaim in the target namespace with
+// a ConsumerRef set to nodeReuserRef (the owner control-plane or machine deployment
+// of the machine). If none of the HostClaims found is available for provisioning,
+// a requeue error is raised to wait until one is deprovisioned.
+// If a claim's ConsumerRef already points at the current Metal3Machine it
+// is immediately selected (recovery from a transient error).
+func (m *MachineHostClaimManager) findReusableHostClaim(
+	ctx context.Context, hostClient client.Client, namespace string,
+	nodeReuserRef *corev1.ObjectReference,
+) (*bmov1alpha1.HostClaim, error) {
+	ownerGV, err := schema.ParseGroupVersion(nodeReuserRef.APIVersion)
+	if err != nil {
+		m.Log.Error(err, "Found an unparsable APIVersion on nodeReuser", "apiVersion", nodeReuserRef.APIVersion)
+		return nil, err
+	}
+	allHostclaims := bmov1alpha1.HostClaimList{}
+	if err := hostClient.List(ctx, &allHostclaims, client.InNamespace(namespace)); err != nil {
+		m.Log.Error(err, "Error listing hostclaims for node reuse")
+		return nil, err
+	}
+	var pending bool
+	for i := range allHostclaims.Items {
+		candidate := &allHostclaims.Items[i]
+		ref := candidate.Spec.ConsumerRef
+		if ref == nil {
+			continue
+		}
+		if consumerRefMatches(ref, m.Metal3Machine) {
+			// Already bound to this Metal3Machine
+			return candidate, nil
+		}
+		if ref.Kind != nodeReuserRef.Kind || ref.Name != nodeReuserRef.Name {
+			continue
+		}
+		gv, gvErr := schema.ParseGroupVersion(ref.APIVersion)
+		if gvErr != nil {
+			m.Log.Error(gvErr, "Unparsable APIVersion on candidate hostclaim consumerRef",
+				"apiVersion", ref.APIVersion, "hostClaim", candidate.Name)
+			continue
+		}
+		if gv.Group != ownerGV.Group {
+			continue
+		}
+		if candidate.DeletionTimestamp != nil {
+			continue
+		}
+		if conditions.IsTrue(candidate, bmov1alpha1.AvailableForProvisioningCondition) {
+			return candidate, nil
+		}
+		pending = true
+	}
+	if pending {
+		m.Log.Info("Waiting for a candidate reusable hostclaim to become available")
+		return nil, WithTransientError(errors.New("waiting for reusable hostclaim"), requeueAfter)
+	}
+	return nil, nil //nolint:nilnil
 }
 
 // hardwareDataAddresses returns a slice of corev1.NodeAddress objects from the HardwareData.

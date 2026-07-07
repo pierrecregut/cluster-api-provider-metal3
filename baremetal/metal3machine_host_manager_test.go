@@ -292,17 +292,9 @@ var _ = Describe("Metal3Machine Manager targeting HostClaims", func() {
 				tc.m3machine.Spec.IdentityRef = infrav1.IdentityRef{Name: "kb"}
 			}
 			remoteClientCache := MockRemoteContext()
-			fakeClient := fake.NewClientBuilder().WithScheme(setupSchemeMm()).WithObjects(tc.m3machine).Build()
+			machine := newMachine(machineName, nil)
+			fakeClient := fake.NewClientBuilder().WithScheme(setupSchemeMm()).WithObjects(tc.m3machine, machine).Build()
 			cluster := newCluster(clusterName)
-			machine := &clusterv1.Machine{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      machineName,
-					Namespace: namespaceName,
-				},
-				Spec: clusterv1.MachineSpec{
-					ClusterName: clusterName,
-				},
-			}
 
 			m3manager, err := NewMachineHostClaimManager(
 				context.TODO(), fakeClient, remoteClientCache,
