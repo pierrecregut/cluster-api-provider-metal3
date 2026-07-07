@@ -294,7 +294,84 @@ func (m *MachineHostClaimManager) Update(ctx context.Context) error {
 	return nil
 }
 
-// getHostClaim gets the associated HostClaim by looking for an annotation on the machine
+// EnsureBlockMove prevents moving a BMH before its hardwareDetails are copied
+// to status. This has no meaning for the HostClaim resource.
+func (m *MachineHostClaimManager) EnsureBlockMoveAnnotation(_ context.Context) error {
+	return nil
+}
+
+// SetPauseAnnotation sets the pause annotations on associated HostClaim as long as it is
+// local.
+func (m *MachineHostClaimManager) SetPauseAnnotation(ctx context.Context) error {
+	if m.remoteClient != nil {
+		return nil
+	}
+	// look for associated HostClaim
+	hostclaim, helper, err := m.getHostClaim(ctx)
+	if err != nil {
+		m.Log.Info("Failed to get HostClaim for Metal3Machine, requeuing",
+			LogFieldMetal3Machine, m.Metal3Machine.Name,
+			LogFieldNamespace, m.Metal3Machine.Namespace,
+			LogFieldError, err.Error())
+		return WithTransientError(err, requeueAfter)
+	}
+	if hostclaim == nil {
+		return nil
+	}
+
+	annotations := hostclaim.GetAnnotations()
+
+	if annotations != nil {
+		if _, ok := annotations[bmov1alpha1.PausedAnnotation]; ok {
+			m.Log.Info("HostClaim is already paused")
+			return nil
+		}
+	} else {
+		hostclaim.Annotations = make(map[string]string)
+	}
+	m.Log.Info("Adding PausedAnnotation in HostClaim")
+	hostclaim.Annotations[bmov1alpha1.PausedAnnotation] = PausedAnnotationKey
+
+	// We should not need to keep the status of host for pivot.
+	// Proxy should maintain the synchronisation over status.
+	return helper.Patch(ctx, hostclaim)
+}
+
+// RemovePauseAnnotation checks and/or Removes the pause annotations on associated HostClaim.
+func (m *MachineHostClaimManager) RemovePauseAnnotation(ctx context.Context) error {
+	if m.remoteClient != nil {
+		return nil
+	}
+	hostclaim, helper, err := m.getHostClaim(ctx)
+	if err != nil {
+		m.Log.Info("Failed to get HostClaim for Metal3Machine, requeuing",
+			LogFieldMetal3Machine, m.Metal3Machine.Name,
+			LogFieldNamespace, m.Metal3Machine.Namespace,
+			LogFieldError, err.Error())
+		return WithTransientError(errors.New("failed to get a HostClaim for the Metal3Machine, requeuing"), requeueAfter)
+	}
+
+	if hostclaim == nil || m.Cluster == nil {
+		return nil
+	}
+
+	annotations := hostclaim.GetAnnotations()
+
+	if annotations != nil {
+		if _, ok := annotations[bmov1alpha1.PausedAnnotation]; ok {
+			if m.Cluster.Name == hostclaim.Labels[clusterv1.ClusterNameLabel] && annotations[bmov1alpha1.PausedAnnotation] == PausedAnnotationKey {
+				// Removing HostClaim Paused Annotation Since Owner Cluster is not paused.
+				delete(hostclaim.Annotations, bmov1alpha1.PausedAnnotation)
+			} else if m.Cluster.Name == hostclaim.Labels[clusterv1.ClusterNameLabel] && annotations[bmov1alpha1.PausedAnnotation] != PausedAnnotationKey {
+				m.Log.Info("HostClaim is paused by user. Not removing Pause Annotation")
+				return nil
+			}
+		}
+	}
+	return helper.Patch(ctx, hostclaim)
+}
+
+// getHostClaim gets the associated host by looking for an annotation on the machine
 // that contains a reference to the hostclaim. Returns nil if not found. Assumes the
 // hostclaim is in the same namespace as the machine if local.
 func (m *MachineHostClaimManager) getHostClaim(ctx context.Context) (*bmov1alpha1.HostClaim, *patch.Helper, error) {

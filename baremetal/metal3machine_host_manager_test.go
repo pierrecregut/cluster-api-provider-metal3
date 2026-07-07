@@ -720,6 +720,248 @@ var _ = Describe("Metal3Machine Manager targeting HostClaims", func() {
 			Expected:  false,
 		}),
 	)
+
+	type testCaseSetPauseAnnotationHC struct {
+		M3Machine          *infrav1.Metal3Machine
+		HostClaim          *bmov1alpha1.HostClaim
+		UseRemoteClient    bool
+		GetError           error
+		ExpectPausePresent bool
+		ExpectPauseValue   string
+		ExpectError        bool
+	}
+
+	DescribeTable("Test SetPauseAnnotation on HostClaim",
+		func(tc testCaseSetPauseAnnotationHC) {
+			ctx := context.TODO()
+			if tc.UseRemoteClient {
+				tc.M3Machine.Spec.IdentityRef = infrav1.IdentityRef{Name: "kb"}
+			}
+
+			localObjects := []client.Object{tc.M3Machine}
+			remoteObjects := []client.Object{}
+			if tc.HostClaim != nil {
+				if tc.UseRemoteClient {
+					remoteObjects = append(remoteObjects, tc.HostClaim)
+				} else {
+					localObjects = append(localObjects, tc.HostClaim)
+				}
+			}
+
+			builder := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(localObjects...)
+			if tc.GetError != nil && !tc.UseRemoteClient {
+				builder = builder.WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+						if _, ok := obj.(*bmov1alpha1.HostClaim); ok {
+							return tc.GetError
+						}
+						return nil
+					},
+				})
+			}
+			fakeClient := builder.Build()
+
+			machineMgr, err := NewMachineHostClaimManager(
+				ctx, fakeClient, MockRemoteContext(remoteObjects...),
+				newCluster(clusterName), nil, newMachine(machineName, nil), tc.M3Machine, GinkgoLogr,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = machineMgr.SetPauseAnnotation(ctx)
+			if tc.ExpectError {
+				Expect(err).To(HaveOccurred())
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			if tc.HostClaim == nil || tc.GetError != nil {
+				return
+			}
+
+			readClient := client.Client(fakeClient)
+			if tc.UseRemoteClient {
+				readClient = machineMgr.remoteClient
+			}
+			saved := bmov1alpha1.HostClaim{}
+			getErr := readClient.Get(ctx, client.ObjectKey{Name: tc.HostClaim.Name, Namespace: tc.HostClaim.Namespace}, &saved)
+			Expect(getErr).NotTo(HaveOccurred())
+
+			value, present := saved.Annotations[bmov1alpha1.PausedAnnotation]
+			if tc.ExpectPausePresent {
+				Expect(present).To(BeTrue())
+				Expect(value).To(Equal(tc.ExpectPauseValue))
+			} else {
+				Expect(present).To(BeFalse())
+			}
+		},
+		Entry("local HostClaim with no annotations gets paused with CAPM3 key", testCaseSetPauseAnnotationHC{
+			M3Machine:          NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim:          NewHostClaimBuilder(hostClaimName, localNs).Build(),
+			ExpectPausePresent: true,
+			ExpectPauseValue:   PausedAnnotationKey,
+		}),
+		Entry("remote HostClaim is left as is", testCaseSetPauseAnnotationHC{
+			M3Machine:          NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim:          NewHostClaimBuilder(hostClaimName, remoteNs).Build(),
+			UseRemoteClient:    true,
+			ExpectPausePresent: false,
+			ExpectPauseValue:   PausedAnnotationKey,
+		}),
+		Entry("HostClaim already paused with CAPM3 key is a no-op", testCaseSetPauseAnnotationHC{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).
+				WithAnnotation(bmov1alpha1.PausedAnnotation, PausedAnnotationKey).Build(),
+			ExpectPausePresent: true,
+			ExpectPauseValue:   PausedAnnotationKey,
+		}),
+		Entry("HostClaim already paused by user is preserved verbatim", testCaseSetPauseAnnotationHC{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).
+				WithAnnotation(bmov1alpha1.PausedAnnotation, "user").Build(),
+			ExpectPausePresent: true,
+			ExpectPauseValue:   "user",
+		}),
+		Entry("missing HostClaim does not error", testCaseSetPauseAnnotationHC{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+		}),
+		Entry("transient get error returns error and does not patch", testCaseSetPauseAnnotationHC{
+			M3Machine:   NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim:   NewHostClaimBuilder(hostClaimName, localNs).Build(),
+			GetError:    errors.New("transient"),
+			ExpectError: true,
+		}),
+	)
+
+	type testCaseRemovePauseAnnotationHC struct {
+		M3Machine          *infrav1.Metal3Machine
+		HostClaim          *bmov1alpha1.HostClaim
+		Cluster            *clusterv1.Cluster
+		UseRemoteClient    bool
+		GetError           error
+		ExpectPausePresent bool
+		ExpectPauseValue   string
+		ExpectError        bool
+	}
+
+	DescribeTable("Test RemovePauseAnnotation on HostClaim",
+		func(tc testCaseRemovePauseAnnotationHC) {
+			ctx := context.TODO()
+			if tc.UseRemoteClient {
+				tc.M3Machine.Spec.IdentityRef = infrav1.IdentityRef{Name: "kb"}
+			}
+
+			localObjects := []client.Object{tc.M3Machine}
+			remoteObjects := []client.Object{}
+			if tc.HostClaim != nil {
+				if tc.UseRemoteClient {
+					remoteObjects = append(remoteObjects, tc.HostClaim)
+				} else {
+					localObjects = append(localObjects, tc.HostClaim)
+				}
+			}
+
+			builder := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(localObjects...)
+			if tc.GetError != nil && !tc.UseRemoteClient {
+				builder = builder.WithInterceptorFuncs(interceptor.Funcs{
+					Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+						if _, ok := obj.(*bmov1alpha1.HostClaim); ok {
+							return tc.GetError
+						}
+						return nil
+					},
+				})
+			}
+			fakeClient := builder.Build()
+
+			machineMgr, err := NewMachineHostClaimManager(
+				ctx, fakeClient, MockRemoteContext(remoteObjects...),
+				tc.Cluster, nil, newMachine(machineName, nil), tc.M3Machine, GinkgoLogr,
+			)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = machineMgr.RemovePauseAnnotation(ctx)
+			if tc.ExpectError {
+				Expect(err).To(HaveOccurred())
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			if tc.HostClaim == nil || tc.GetError != nil {
+				return
+			}
+
+			readClient := client.Client(fakeClient)
+			if tc.UseRemoteClient {
+				readClient = machineMgr.remoteClient
+			}
+			saved := bmov1alpha1.HostClaim{}
+			getErr := readClient.Get(ctx, client.ObjectKey{Name: tc.HostClaim.Name, Namespace: tc.HostClaim.Namespace}, &saved)
+			Expect(getErr).NotTo(HaveOccurred())
+
+			value, present := saved.Annotations[bmov1alpha1.PausedAnnotation]
+			if tc.ExpectPausePresent {
+				Expect(present).To(BeTrue())
+				Expect(value).To(Equal(tc.ExpectPauseValue))
+			} else {
+				Expect(present).To(BeFalse())
+			}
+		},
+		Entry("CAPM3-paused HostClaim with matching cluster label is unpaused", testCaseRemovePauseAnnotationHC{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).
+				WithClusterLabel(clusterName).
+				WithAnnotation(bmov1alpha1.PausedAnnotation, PausedAnnotationKey).Build(),
+			Cluster: newCluster(clusterName),
+		}),
+		Entry("remote CAPM3-paused HostClaim is left as is", testCaseRemovePauseAnnotationHC{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, remoteNs).
+				WithClusterLabel(clusterName).
+				WithAnnotation(bmov1alpha1.PausedAnnotation, PausedAnnotationKey).Build(),
+			Cluster:            newCluster(clusterName),
+			UseRemoteClient:    true,
+			ExpectPausePresent: true,
+			ExpectPauseValue:   PausedAnnotationKey, // In practice only user set annotation should be present.
+		}),
+		Entry("user-paused HostClaim with matching cluster label is preserved", testCaseRemovePauseAnnotationHC{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).
+				WithClusterLabel(clusterName).
+				WithAnnotation(bmov1alpha1.PausedAnnotation, "user").Build(),
+			Cluster:            newCluster(clusterName),
+			ExpectPausePresent: true,
+			ExpectPauseValue:   "user",
+		}),
+		Entry("HostClaim with no annotations does not error", testCaseRemovePauseAnnotationHC{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).Build(),
+			Cluster:   newCluster(clusterName),
+		}),
+		Entry("missing HostClaim does not error", testCaseRemovePauseAnnotationHC{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			Cluster:   newCluster(clusterName),
+		}),
+		Entry("nil cluster leaves annotation untouched and does not error", testCaseRemovePauseAnnotationHC{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).
+				WithClusterLabel(clusterName).
+				WithAnnotation(bmov1alpha1.PausedAnnotation, PausedAnnotationKey).Build(),
+			Cluster:            nil,
+			ExpectPausePresent: true,
+			ExpectPauseValue:   PausedAnnotationKey,
+		}),
+		Entry("transient get error returns error", testCaseRemovePauseAnnotationHC{
+			M3Machine: NewM3MBuilder(metal3machineName, localNs).WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim: NewHostClaimBuilder(hostClaimName, localNs).
+				WithClusterLabel(clusterName).
+				WithAnnotation(bmov1alpha1.PausedAnnotation, PausedAnnotationKey).Build(),
+			Cluster:            newCluster(clusterName),
+			GetError:           errors.New("transient"),
+			ExpectError:        true,
+			ExpectPausePresent: true,
+			ExpectPauseValue:   PausedAnnotationKey,
+		}),
+	)
 })
 
 // MockRemote implements the RemoteClientCache interface.
@@ -802,6 +1044,22 @@ func (hb *HostClaimBuilder) WithDeletionTimestamp() *HostClaimBuilder {
 
 func (hb *HostClaimBuilder) WithConsumerRef(ref *corev1.ObjectReference) *HostClaimBuilder {
 	hb.hostclaim.Spec.ConsumerRef = ref
+	return hb
+}
+
+func (hb *HostClaimBuilder) WithAnnotation(key, value string) *HostClaimBuilder {
+	if hb.hostclaim.Annotations == nil {
+		hb.hostclaim.Annotations = map[string]string{}
+	}
+	hb.hostclaim.Annotations[key] = value
+	return hb
+}
+
+func (hb *HostClaimBuilder) WithClusterLabel(name string) *HostClaimBuilder {
+	if hb.hostclaim.Labels == nil {
+		hb.hostclaim.Labels = map[string]string{}
+	}
+	hb.hostclaim.Labels[clusterv1.ClusterNameLabel] = name
 	return hb
 }
 
