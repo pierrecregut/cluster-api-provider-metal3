@@ -59,8 +59,8 @@ case "${GINKGO_FOCUS:-}" in
     export WORKER_MACHINE_COUNT=${WORKER_MACHINE_COUNT:-"1"}
   ;;
 
-  # Pivoting, k8s-upgrade, hostclaim-based tests and remediation vars and config
-  pivoting|k8s-upgrade|remediation)
+  # Pivoting, k8s-upgrade and remediation vars and config
+  pivoting|k8s-upgrade|hostclaim-k8s-upgrade|remediation)
     export NUM_NODES="4"
     export CONTROL_PLANE_MACHINE_COUNT=${CONTROL_PLANE_MACHINE_COUNT:-"3"}
     export WORKER_MACHINE_COUNT=${WORKER_MACHINE_COUNT:-"1"}
