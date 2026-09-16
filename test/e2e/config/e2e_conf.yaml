@@ -285,6 +285,8 @@ providers:
       targetName: "cluster-template-centos-ip-reuse-v1beta1.yaml"
     - sourcePath: "../_out/main/cluster-template-centos-hostclaims.yaml"
       targetName: "cluster-template-centos-hostclaims.yaml"
+    - sourcePath: "../_out/main/cluster-template-centos-hostclaims-remote.yaml"
+      targetName: "cluster-template-centos-hostclaims-remote.yaml"
 
 variables:
   CNI: "/tmp/cni.yaml"

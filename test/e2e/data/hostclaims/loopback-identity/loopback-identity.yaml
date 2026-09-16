@@ -1,0 +1,104 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tenant-test1
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: hostclaim-agent
+  namespace: tenant-test1
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hostclaim-agent
+  namespace: tenant-test1
+rules:
+- apiGroups:
+  - metal3.io
+  resources:
+  - hostclaims
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - metal3.io
+  resources:
+  - hostclaims/status
+  verbs:
+  - get
+  - patch
+  - update
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - create
+  - get
+  - list
+  - patch
+  - update
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hostclaim-agent
+  namespace: tenant-test1
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hostclaim-agent
+subjects:
+- kind: ServiceAccount
+  name: hostclaim-agent
+  namespace: tenant-test1
+---
+# BMO stamps HostClaim.Status.HardwareData with {Namespace: bmh.Namespace,
+# Name: bmh.Name}, so the reference always points at the BMH namespace.
+# CAPM3's DataGetter Gets it there to render user-data / metadata / network-data.
+# Cluster-wide read is the tenant-agnostic way to serve this without leaking
+# the BMH namespace name into the tenant's config. HardwareData carries only
+# inspection results, no credentials.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: hostclaim-agent-hardwaredata-reader
+rules:
+- apiGroups:
+  - metal3.io
+  resources:
+  - hardwaredata
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: hostclaim-agent-hardwaredata-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: hostclaim-agent-hardwaredata-reader
+subjects:
+- kind: ServiceAccount
+  name: hostclaim-agent
+  namespace: tenant-test1
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: hostclaim-agent-token
+  namespace: tenant-test1
+  annotations:
+    kubernetes.io/service-account.name: hostclaim-agent
+type: kubernetes.io/service-account-token

@@ -53,13 +53,13 @@ case "${GINKGO_FOCUS:-}" in
   ;;
 
   # Integration test environment vars and config
-  basic|integration|hostclaim-basic)
+  basic|integration|hostclaim-basic|hostclaim-remote)
     export NUM_NODES=${NUM_NODES:-"2"}
     export CONTROL_PLANE_MACHINE_COUNT=${CONTROL_PLANE_MACHINE_COUNT:-"1"}
     export WORKER_MACHINE_COUNT=${WORKER_MACHINE_COUNT:-"1"}
   ;;
 
-  # Pivoting, k8s-upgrade and remediation vars and config
+  # Pivoting, k8s-upgrade, hostclaim-based tests and remediation vars and config
   pivoting|k8s-upgrade|remediation)
     export NUM_NODES="4"
     export CONTROL_PLANE_MACHINE_COUNT=${CONTROL_PLANE_MACHINE_COUNT:-"3"}

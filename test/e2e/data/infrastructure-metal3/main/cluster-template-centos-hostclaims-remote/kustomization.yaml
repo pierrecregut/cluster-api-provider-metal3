@@ -1,0 +1,11 @@
+resources:
+- ../cluster-template-centos-hostclaims
+patches:
+- target:
+    group: infrastructure.cluster.x-k8s.io
+    kind: Metal3MachineTemplate
+  patch: |-
+    - op: add
+      path: /spec/template/spec/identityRef
+      value:
+        name: hostclaim-loopback-kubeconfig

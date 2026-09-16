@@ -248,6 +248,7 @@ cluster-templates-main: $(KUSTOMIZE) ## Generate cluster templates
 	$(KUSTOMIZE) build $(E2E_TEMPLATES_DIR)/main/cluster-template-centos-ip-reuse > $(E2E_OUT_DIR)/main/cluster-template-centos-ip-reuse.yaml
 	$(KUSTOMIZE) build $(E2E_TEMPLATES_DIR)/main/cluster-template-opensuse-leap-ip-reuse > $(E2E_OUT_DIR)/main/cluster-template-opensuse-leap-ip-reuse.yaml
 	$(KUSTOMIZE) build $(E2E_TEMPLATES_DIR)/main/cluster-template-centos-hostclaims > $(E2E_OUT_DIR)/main/cluster-template-centos-hostclaims.yaml
+	$(KUSTOMIZE) build $(E2E_TEMPLATES_DIR)/main/cluster-template-centos-hostclaims-remote > $(E2E_OUT_DIR)/main/cluster-template-centos-hostclaims-remote.yaml
 	touch $(E2E_OUT_DIR)/main/clusterclass.yaml
 
 .PHONY: cluster-templates-main-v1beta1
