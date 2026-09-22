@@ -494,6 +494,12 @@ func setupReconcilers(ctx context.Context, mgr ctrl.Manager) {
 		setupLog.Error(err, "Unable to create ClusterCache")
 		os.Exit(1)
 	}
+	// Set up a remote client cache for watching remote hostclaims
+	rcc := baremetal.NewRemoteClientCache(mgr.GetClient())
+	if err = mgr.Add(rcc); err != nil {
+		setupLog.Error(err, "Cannot setup the HostClaim RemoteClientCache")
+		os.Exit(1)
+	}
 	if err = (&controllers.Metal3MachineReconciler{
 		Client:           mgr.GetClient(),
 		ClusterCache:     clusterCache,
