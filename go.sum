@@ -133,8 +133,6 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/maruel/natural v1.1.1 h1:Hja7XhhmvEFhcByqDoHz9QZbkWey+COd9xWfCfn1ioo=
 github.com/maruel/natural v1.1.1/go.mod h1:v+Rfd79xlw1AgVBjbO0BEQmptqb5HvL/k9GRHB7ZKEg=
-github.com/metal3-io/baremetal-operator/apis v0.14.1 h1:sRTerUw74/4m65ceFQ4LXMHUUw7EdcyhSFWXA1gNfcY=
-github.com/metal3-io/baremetal-operator/apis v0.14.1/go.mod h1:JqfrsuMUnYLKhdI4CVMIyrurRhygpC73dwtW5GTu7/c=
 github.com/metal3-io/ip-address-manager/api v1.14.0-rc.0 h1:+YJYBRLC4jBjz3IqSzBeSVY3JzTfc9vLydO4Fmeorx0=
 github.com/metal3-io/ip-address-manager/api v1.14.0-rc.0/go.mod h1:w2orGATNQecqvAm1mMDVjfQMMh2ZlCKqC5pQbKAz/2M=
 github.com/mfridman/tparse v0.18.0 h1:wh6dzOKaIwkUGyKgOntDW4liXSo37qg5AXbIhkMV3vE=
@@ -203,6 +201,8 @@ github.com/tidwall/sjson v1.2.5 h1:kLy8mja+1c9jlljvWTlSazM7cKDRfJuR/bOJhcY5NcY=
 github.com/tidwall/sjson v1.2.5/go.mod h1:Fvgq9kS/6ociJEDnK0Fk1cpYF4FIW6ZF7LAe+6jwd28=
 github.com/x448/float16 v0.8.4 h1:qLwI1I70+NjRFUR3zs1JPUCgaCXSh3SW62uAKT1mSBM=
 github.com/x448/float16 v0.8.4/go.mod h1:14CWIYCyZA/cWjXOioeEpHeN/83MdbZDRQHoFcYsOfg=
+gitlab.com/Orange-OpenSource/kanod/baremetal-operator/apis v0.14.0-beta.10 h1:9LkV1jxuBtiF6EbOBRSF9Fs4let/NdJvtCrBtjBd6MA=
+gitlab.com/Orange-OpenSource/kanod/baremetal-operator/apis v0.14.0-beta.10/go.mod h1:OyXzgO9dvGlUf2sfnrowyu0mO3O8guFEdd2hcSufHEs=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
 go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
 go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.70.0 h1:LMuyCAyfalSjDyjdC65nK6N0zoTT63+E/u95X0JovZI=
