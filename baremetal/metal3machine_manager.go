@@ -106,7 +106,7 @@ type MachineManagerInterface interface {
 	Update(context.Context) error
 	HasAnnotation() bool
 	SetProviderID(string)
-	SetDefaultProviderID() error
+	SetDefaultProviderID(context.Context) error
 	SetProviderIDFromCloudProviderNode(context.Context, ClientGetter) error
 	SetProviderIDFromNodeLabel(context.Context, ClientGetter) (bool, error)
 	SetNodeProviderIDByHostname(context.Context, ClientGetter) error
@@ -127,6 +127,15 @@ type MachineManagerInterface interface {
 	SetMetal3DataReadyConditionTrue(reason string)
 }
 
+// BMHResolver returns the BareMetalHost name and UID associated with the
+// Metal3Machine. The implementation differs between BareMetalHost (direct
+// from an annotation) and HostClaims (through an intermediate HostClaim
+// resource).
+type BMHResolver interface {
+	getBmhNameFromM3Machine(context.Context) (string, error)
+	getBmhUIDFromM3Machine(context.Context) (string, error)
+}
+
 // MachineManager is responsible for performing machine reconciliation.
 type MachineManager struct {
 	client client.Client
@@ -140,6 +149,10 @@ type MachineManager struct {
 	MachineSet            *clusterv1.MachineSet
 	MachineSetList        *clusterv1.MachineSetList
 	Log                   logr.Logger
+	// resolver resolves the BMH name/UID for this Metal3Machine. Defaults to
+	// the manager itself (annotation lookup); MachineHostManager overwrites
+	// it with itself so the HostClaim methods are used.
+	resolver BMHResolver
 }
 
 // GetMetal3Machine returns the underlying Metal3Machine object.
@@ -152,7 +165,7 @@ func NewMachineManager(client client.Client,
 	cluster *clusterv1.Cluster, metal3Cluster *infrav1.Metal3Cluster,
 	machine *clusterv1.Machine, metal3machine *infrav1.Metal3Machine,
 	machineLog logr.Logger) (*MachineManager, error) {
-	return &MachineManager{
+	mm := &MachineManager{
 		client: client,
 
 		Cluster:       cluster,
@@ -160,7 +173,9 @@ func NewMachineManager(client client.Client,
 		Machine:       machine,
 		Metal3Machine: metal3machine,
 		Log:           machineLog,
-	}, nil
+	}
+	mm.resolver = mm
+	return mm, nil
 }
 
 // NewMachineSetManager returns a new helper for managing a machineset.
@@ -1526,11 +1541,11 @@ func (m *MachineManager) SetProviderID(providerID string) {
 	m.Metal3Machine.Spec.ProviderID = providerID
 }
 
-// SetDefaultProviderID sets the ProviderID on this Metal3Machine using the proper format.
-func (m *MachineManager) SetDefaultProviderID() error {
+// SetDefaultProviderID sets the ProviderID on this Metal3Machine using the new format.
+func (m *MachineManager) SetDefaultProviderID(ctx context.Context) error {
 	namespace := m.Metal3Machine.GetNamespace()
 	m3mName := m.Metal3Machine.GetName()
-	bmhName, err := m.getBmhNameFromM3Machine()
+	bmhName, err := m.resolver.getBmhNameFromM3Machine(ctx)
 
 	if err != nil {
 		return err
@@ -1543,10 +1558,10 @@ func (m *MachineManager) SetDefaultProviderID() error {
 }
 
 // getProviderID returns the ProviderID for this Metal3Machine in proper format.
-func (m *MachineManager) getProviderID() (providerID string, err error) {
+func (m *MachineManager) getProviderID(ctx context.Context) (providerID string, err error) {
 	namespace := m.Metal3Machine.GetNamespace()
 	m3mName := m.Metal3Machine.GetName()
-	bmhName, err := m.getBmhNameFromM3Machine()
+	bmhName, err := m.resolver.getBmhNameFromM3Machine(ctx)
 	if err != nil {
 		errMessage := "unable to retrieve BMH name from Metal3Machine"
 		m.Log.Info(errMessage)
@@ -1561,7 +1576,7 @@ func (m *MachineManager) getProviderID() (providerID string, err error) {
 // SetProviderIDFromCloudProviderNode finds a Node by ProviderID and copies that ProviderID to the Metal3Machine.
 func (m *MachineManager) SetProviderIDFromCloudProviderNode(ctx context.Context, clientFactory ClientGetter) error {
 	m.Log.V(VerbosityLevelTrace).Info("Setting ProviderID from cloud provider node")
-	providerID, err := m.getProviderID()
+	providerID, err := m.getProviderID(ctx)
 	if err != nil {
 		return WithTransientError(err, requeueAfter)
 	}
@@ -1585,7 +1600,7 @@ func (m *MachineManager) NodeWithMatchingProviderIDExists(ctx context.Context, c
 		return false
 	}
 
-	providerID, err := m.getProviderID()
+	providerID, err := m.getProviderID(ctx)
 	if err != nil {
 		return false
 	}
@@ -1608,7 +1623,7 @@ func (m *MachineManager) SetProviderIDFromNodeLabel(ctx context.Context, clientF
 	if err != nil {
 		return false, fmt.Errorf("error creating a remote client: %w", err)
 	}
-	bmhUID, err := m.getBmhUIDFromM3Machine(ctx)
+	bmhUID, err := m.resolver.getBmhUIDFromM3Machine(ctx)
 	if err != nil {
 		errMessage := "unable to retrieve BMH UID from Metal3Machine"
 		m.Log.Info(errMessage)
@@ -1633,7 +1648,7 @@ func (m *MachineManager) SetProviderIDFromNodeLabel(ctx context.Context, clientF
 		return false, fmt.Errorf("found multiple target nodes with the same label: (%s): %w", nodeLabel, err)
 	}
 
-	providerID, err := m.getProviderID()
+	providerID, err := m.getProviderID(ctx)
 	if err != nil {
 		errMessage := fmt.Sprintf("unable to retrieve BMH name from Metal3Machine: %v", err)
 		m.Log.Info(errMessage)
@@ -2111,7 +2126,7 @@ func (m *MachineManager) getNodeReuserRef(ctx context.Context) (*corev1.ObjectRe
 }
 
 // getBmhNameFromM3Machine retrieves bmhName from m3m annotations.
-func (m *MachineManager) getBmhNameFromM3Machine() (string, error) {
+func (m *MachineManager) getBmhNameFromM3Machine(_ context.Context) (string, error) {
 	annotationValue := m.Metal3Machine.ObjectMeta.GetAnnotations()[HostAnnotation]
 	valueParts := strings.Split(annotationValue, "/")
 	//nolint:mnd

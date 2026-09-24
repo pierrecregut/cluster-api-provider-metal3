@@ -287,17 +287,17 @@ func (mr *MockMachineManagerInterfaceMockRecorder) SetCondition(arg0, arg1, arg2
 }
 
 // SetDefaultProviderID mocks base method.
-func (m *MockMachineManagerInterface) SetDefaultProviderID() error {
+func (m *MockMachineManagerInterface) SetDefaultProviderID(arg0 context.Context) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SetDefaultProviderID")
+	ret := m.ctrl.Call(m, "SetDefaultProviderID", arg0)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // SetDefaultProviderID indicates an expected call of SetDefaultProviderID.
-func (mr *MockMachineManagerInterfaceMockRecorder) SetDefaultProviderID() *gomock.Call {
+func (mr *MockMachineManagerInterfaceMockRecorder) SetDefaultProviderID(arg0 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetDefaultProviderID", reflect.TypeOf((*MockMachineManagerInterface)(nil).SetDefaultProviderID))
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetDefaultProviderID", reflect.TypeOf((*MockMachineManagerInterface)(nil).SetDefaultProviderID), arg0)
 }
 
 // SetError mocks base method.
@@ -470,4 +470,58 @@ func (m *MockMachineManagerInterface) Update(arg0 context.Context) error {
 func (mr *MockMachineManagerInterfaceMockRecorder) Update(arg0 any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockMachineManagerInterface)(nil).Update), arg0)
+}
+
+// MockBMHResolver is a mock of BMHResolver interface.
+type MockBMHResolver struct {
+	ctrl     *gomock.Controller
+	recorder *MockBMHResolverMockRecorder
+	isgomock struct{}
+}
+
+// MockBMHResolverMockRecorder is the mock recorder for MockBMHResolver.
+type MockBMHResolverMockRecorder struct {
+	mock *MockBMHResolver
+}
+
+// NewMockBMHResolver creates a new mock instance.
+func NewMockBMHResolver(ctrl *gomock.Controller) *MockBMHResolver {
+	mock := &MockBMHResolver{ctrl: ctrl}
+	mock.recorder = &MockBMHResolverMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockBMHResolver) EXPECT() *MockBMHResolverMockRecorder {
+	return m.recorder
+}
+
+// getBmhNameFromM3Machine mocks base method.
+func (m *MockBMHResolver) getBmhNameFromM3Machine(arg0 context.Context) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "getBmhNameFromM3Machine", arg0)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// getBmhNameFromM3Machine indicates an expected call of getBmhNameFromM3Machine.
+func (mr *MockBMHResolverMockRecorder) getBmhNameFromM3Machine(arg0 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "getBmhNameFromM3Machine", reflect.TypeOf((*MockBMHResolver)(nil).getBmhNameFromM3Machine), arg0)
+}
+
+// getBmhUIDFromM3Machine mocks base method.
+func (m *MockBMHResolver) getBmhUIDFromM3Machine(arg0 context.Context) (string, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "getBmhUIDFromM3Machine", arg0)
+	ret0, _ := ret[0].(string)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// getBmhUIDFromM3Machine indicates an expected call of getBmhUIDFromM3Machine.
+func (mr *MockBMHResolverMockRecorder) getBmhUIDFromM3Machine(arg0 any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "getBmhUIDFromM3Machine", reflect.TypeOf((*MockBMHResolver)(nil).getBmhUIDFromM3Machine), arg0)
 }

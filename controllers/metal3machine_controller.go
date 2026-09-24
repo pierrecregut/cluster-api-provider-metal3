@@ -580,7 +580,7 @@ func (r *Metal3MachineReconciler) reconcileNormal(ctx context.Context,
 
 	if !hasProviderID {
 		log.V(baremetal.VerbosityLevelTrace).Info("Setting default ProviderID")
-		err = machineMgr.SetDefaultProviderID()
+		err = machineMgr.SetDefaultProviderID(ctx)
 		if err != nil {
 			log.V(baremetal.VerbosityLevelDebug).Info("Failed to set default ProviderID",
 				baremetal.LogFieldError, err.Error())

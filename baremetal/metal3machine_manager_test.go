@@ -56,6 +56,23 @@ const (
 var ProviderID = fmt.Sprintf("metal3://%s/%s/%s", namespaceName, baremetalhostName, metal3machineName)
 var defaultBMHUID = types.UID("4d25a2c2-46e4-11ec-81d3-0242ac130003")
 
+// fakeBmhResolver is a hand-written bmhResolver used to prove that
+// MachineManager dispatches through its resolver field. It never touches the
+// live BMH, so any behavior that reaches it demonstrates the extension point.
+type fakeBmhResolver struct {
+	name string
+	uid  string
+	err  error
+}
+
+func (r fakeBmhResolver) getBmhNameFromM3Machine(_ context.Context) (string, error) {
+	return r.name, r.err
+}
+
+func (r fakeBmhResolver) getBmhUIDFromM3Machine(_ context.Context) (string, error) {
+	return r.uid, r.err
+}
+
 var testImageDiskFormat = "raw"
 
 func m3mSpec() *infrav1.Metal3MachineSpec {
@@ -375,6 +392,22 @@ var _ = Describe("Metal3Machine manager", func() {
 			},
 		}),
 	)
+
+	// Test SetDefaultProviderID with an overridden BMH resolver.
+	It("SetDefaultProviderID dispatches through the injected bmhResolver", func() {
+		m3m := &infrav1.Metal3Machine{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "example-m3m",
+				Namespace: "example-ns",
+			},
+		}
+		mgr, err := NewMachineManager(nil, nil, nil, nil, m3m, logr.Discard())
+		Expect(err).NotTo(HaveOccurred())
+		mgr.resolver = fakeBmhResolver{name: "from-fake-resolver", uid: "irrelevant"}
+
+		Expect(mgr.SetDefaultProviderID(context.TODO())).To(Succeed())
+		Expect(m3m.Spec.ProviderID).To(Equal("metal3://example-ns/from-fake-resolver/example-m3m"))
+	})
 
 	type testCaseProvisioned struct {
 		M3Machine  infrav1.Metal3Machine
