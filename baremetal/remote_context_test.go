@@ -24,6 +24,7 @@ import (
 	infrav1 "github.com/metal3-io/cluster-api-provider-metal3/api/v1beta2"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"go.uber.org/goleak"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -149,9 +150,10 @@ var _ = Describe("Remote client cache", func() {
 
 	Describe("GetRemoteClient / Release", func() {
 		var (
-			rcc         *RemoteClientCache
-			fakeWatches map[string]*watch.FakeWatcher
-			cancelStart context.CancelFunc
+			rcc               *RemoteClientCache
+			fakeWatches       map[string]*watch.FakeWatcher
+			cancelStart       context.CancelFunc
+			ignorePreExisting goleak.Option
 		)
 
 		// newBuilder returns a fake remoteClientBuilder. client is kept defined.
@@ -167,6 +169,11 @@ var _ = Describe("Remote client cache", func() {
 		}
 
 		BeforeEach(func() {
+			// Snapshot the goroutines already running (envtest, klog, prior
+			// specs' stragglers) so goleak.Find only flags goroutines this
+			// spec created and failed to clean up.
+			ignorePreExisting = goleak.IgnoreCurrent()
+
 			fakeWatches = map[string]*watch.FakeWatcher{}
 			rcc, _ = NewRemoteClientCache(fakeClient()).(*RemoteClientCache)
 			rcc.remoteClientBuilder = newBuilder()
@@ -188,6 +195,9 @@ var _ = Describe("Remote client cache", func() {
 				}
 			}
 			cancelStart()
+			Eventually(func() error {
+				return goleak.Find(ignorePreExisting)
+			}, "2s", "100ms").Should(Succeed())
 		})
 
 		It("when IdentityRef is empty, returns nil", func() {
