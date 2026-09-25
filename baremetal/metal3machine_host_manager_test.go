@@ -180,6 +180,85 @@ var _ = Describe("Metal3Machine Manager targeting HostClaims", func() {
 		Expect(cond[0].Reason).To(Equal(infrav1.RemoteClusterUnavailableReason))
 	})
 
+	type testCaseSyncSecretData struct {
+		source           *corev1.SecretReference
+		localSecret      *corev1.Secret
+		useRemoteClient  bool
+		expectError      bool
+		expectedRef      *corev1.SecretReference
+		expectRemoteData map[string][]byte
+	}
+
+	DescribeTable("syncSecretData",
+		func(tc testCaseSyncSecretData) {
+			var hostClaim *bmov1alpha1.HostClaim
+			m3machine := NewM3MBuilder(metal3machineName, localNs).Build()
+			remoteClientCache := MockRemoteContext()
+			if tc.useRemoteClient {
+				hostClaim = NewHostClaimBuilder(hostClaimName, remoteNs).Build()
+				m3machine.Spec.IdentityRef = infrav1.IdentityRef{Name: "kb"}
+			} else {
+				hostClaim = NewHostClaimBuilder(hostClaimName, localNs).Build()
+				m3machine.Spec.IdentityRef = infrav1.IdentityRef{}
+			}
+			localObjects := []client.Object{m3machine}
+			if tc.localSecret != nil {
+				localObjects = append(localObjects, tc.localSecret)
+			}
+			fakeClient := fake.NewClientBuilder().WithScheme(setupScheme()).WithObjects(localObjects...).Build()
+
+			m3manager, err := NewMachineHostClaimManager(
+				context.TODO(), fakeClient, remoteClientCache,
+				nil, nil, nil, m3machine, GinkgoLogr)
+			Expect(err).NotTo(HaveOccurred())
+
+			ref, err := m3manager.syncSecretData(context.TODO(), tc.source, hostClaim, "userdata")
+			if tc.expectError {
+				Expect(err).To(HaveOccurred())
+				return
+			}
+			Expect(err).NotTo(HaveOccurred())
+			if tc.expectedRef == nil {
+				Expect(ref).To(BeNil())
+			} else {
+				Expect(ref).NotTo(BeNil())
+				Expect(ref.Name).To(Equal(tc.expectedRef.Name))
+			}
+			if tc.expectRemoteData != nil {
+				remoteSecret := corev1.Secret{}
+				err = m3manager.remoteClient.Get(context.TODO(),
+					client.ObjectKey{Name: hostClaimName + "-userdata", Namespace: remoteNs},
+					&remoteSecret)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(remoteSecret.Data).To(Equal(tc.expectRemoteData))
+			}
+		},
+		Entry("nil source returns nil", testCaseSyncSecretData{
+			source:      nil,
+			expectedRef: nil,
+		}),
+		Entry("local client copies source name", testCaseSyncSecretData{
+			source:          &corev1.SecretReference{Name: "datasecret", Namespace: localNs},
+			useRemoteClient: false,
+			expectedRef:     &corev1.SecretReference{Name: "datasecret"},
+		}),
+		Entry("remote client syncs secret data", testCaseSyncSecretData{
+			source:          &corev1.SecretReference{Name: "datasecret", Namespace: localNs},
+			useRemoteClient: true,
+			localSecret: &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "datasecret", Namespace: localNs},
+				Data:       map[string][]byte{"key": []byte("value")},
+			},
+			expectedRef:      &corev1.SecretReference{Name: hostClaimName + "-userdata"},
+			expectRemoteData: map[string][]byte{"key": []byte("value")},
+		}),
+		Entry("remote client errors when local secret missing", testCaseSyncSecretData{
+			source:          &corev1.SecretReference{Name: "missing-secret", Namespace: localNs},
+			useRemoteClient: true,
+			expectError:     true,
+		}),
+	)
+
 	// setHostSpec
 	// ensureAnnotation
 	// translateHostRequirements
@@ -307,8 +386,6 @@ var _ = Describe("Metal3Machine Manager targeting HostClaims", func() {
 		Machine            *clusterv1.Machine
 		Host               *bmov1alpha1.HostClaim
 		M3Machine          *infrav1.Metal3Machine
-		DataTemplate       *infrav1.Metal3DataTemplate
-		Data               *infrav1.Metal3Data
 		ExpectRequeue      bool
 		ExpectClusterLabel bool
 		ExpectOwnerRef     bool
@@ -343,12 +420,6 @@ var _ = Describe("Metal3Machine Manager targeting HostClaims", func() {
 			}
 			if tc.Host != nil {
 				objects = append(objects, tc.Host)
-			}
-			if tc.DataTemplate != nil {
-				objects = append(objects, tc.DataTemplate)
-			}
-			if tc.Data != nil {
-				objects = append(objects, tc.Data)
 			}
 			fakeClient := fake.NewClientBuilder().WithScheme(setupSchemeMm()).WithObjects(objects...).Build()
 
@@ -399,52 +470,95 @@ var _ = Describe("Metal3Machine Manager targeting HostClaims", func() {
 			testCaseAssociate{
 				Machine: newMachine("", nil),
 				M3Machine: NewM3MBuilder(metal3machineName, namespaceName).InNamespace("").
-					UserData(metal3machineName + "-user-data").Image(defaultImage).WithClaimAnnotation(hostClaimName).Build(),
+					WithClaimAnnotation(hostClaimName).Build(),
 				ExpectRequeue:  false,
 				ExpectOwnerRef: true,
 			},
 		),
-		Entry("Associate machine with DataTemplate missing",
-			testCaseAssociate{
-				Machine: newMachine(machineName, nil),
-				M3Machine: NewM3MBuilder(metal3machineName, namespaceName).InNamespace("").
-					UserData(metal3machineName + "-user-data").Image(defaultImage).WithClaimAnnotation(hostClaimName).
-					DataTemplate("abcd").Build(),
-				ExpectClusterLabel: true,
-				ExpectRequeue:      false,
-				ExpectOwnerRef:     true,
-			},
-		),
-		Entry("Associate machine with DataTemplate and Data ready",
-			testCaseAssociate{
-				Machine: newMachine(machineName, nil),
-				M3Machine: NewM3MBuilder(metal3machineName, namespaceName).InNamespace("").
-					UserData(metal3machineName + "-user-data").Image(defaultImage).WithClaimAnnotation(hostClaimName).
-					DataTemplate("abcd").RenderedData("abcd-0").Build(),
-				Data: &infrav1.Metal3Data{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "abcd-0",
-						Namespace: namespaceName,
-					},
-					Spec: infrav1.Metal3DataSpec{
-						MetaData: &corev1.SecretReference{
-							Name: "metadata",
-						},
-						NetworkData: &corev1.SecretReference{
-							Name: "networkdata",
-						},
-					},
-					Status: infrav1.Metal3DataStatus{
-						Ready: ptr.To(true),
-					},
-				},
-				ExpectClusterLabel: true,
-				ExpectRequeue:      false,
-				ExpectOwnerRef:     true,
-			},
-		),
 	)
 
+	type testCaseUpdate struct {
+		Machine       *clusterv1.Machine
+		HostClaim     *bmov1alpha1.HostClaim
+		M3Machine     *infrav1.Metal3Machine
+		Secrets       []client.Object
+		Remote        bool
+		RemoteSecrets int
+		ExpectError   bool
+		ExpectRequeue bool
+	}
+
+	DescribeTable("Test Update function",
+		func(tc testCaseUpdate) {
+			ctx := context.TODO()
+			objects := []client.Object{
+				tc.M3Machine,
+				tc.Machine,
+			}
+			objects = append(objects, tc.Secrets...)
+			remoteObjs := []client.Object{}
+			if tc.HostClaim != nil {
+				if tc.Remote {
+					remoteObjs = append(remoteObjs, tc.HostClaim)
+				} else {
+					objects = append(objects, tc.HostClaim)
+				}
+			}
+			fakeClient := fake.NewClientBuilder().WithScheme(setupSchemeMm()).WithObjects(objects...).Build()
+
+			mockRemoteClientCache := MockRemoteContext(remoteObjs...)
+			machineMgr, err := NewMachineHostClaimManager(ctx, fakeClient, mockRemoteClientCache, newCluster(clusterName), nil, tc.Machine,
+				tc.M3Machine, GinkgoLogr,
+			)
+			Expect(err).NotTo(HaveOccurred())
+			// Needed to get a status.UserData (done during Associate)
+			Expect(machineMgr.getUserDataSecretName(ctx)).To(Succeed())
+			// AssociateM3Metadata must be run before Update (done by controller)
+			Expect(machineMgr.AssociateM3Metadata(ctx)).To(Succeed())
+			err = machineMgr.Update(ctx)
+			if tc.ExpectRequeue {
+				var reconcileError ReconcileError
+				Expect(errors.As(err, &reconcileError)).To(BeTrue())
+			} else if tc.ExpectError {
+				Expect(err).To(HaveOccurred())
+			} else {
+				Expect(err).NotTo(HaveOccurred())
+			}
+			secretList := corev1.SecretList{}
+			mr, ok := mockRemoteClientCache.(*MockRemote)
+			Expect(ok).To(BeTrue())
+			remoteClient := mr.client
+			Expect(remoteClient.List(ctx, &secretList)).To(Succeed())
+			Expect(secretList.Items).To(HaveLen(tc.RemoteSecrets))
+		},
+		Entry("Regular case - no image yet", testCaseUpdate{
+			Machine:     newMachine("", nil),
+			M3Machine:   NewM3MBuilder(metal3machineName, namespaceName).InNamespace("").UserData("user-data").MetaData("meta-data").WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim:   NewHostClaimBuilder(hostClaimName, namespaceName).Build(),
+			ExpectError: true,
+		}),
+		Entry("Regular case - with image - local", testCaseUpdate{
+			Machine:   newMachine("", nil),
+			M3Machine: NewM3MBuilder(metal3machineName, namespaceName).InNamespace("").Image(defaultImage).UserData("user-data").MetaData("meta-data").WithClaimAnnotation(hostClaimName).Build(),
+			Secrets:   []client.Object{newHostClaimSecret("user-data", map[string][]byte{}), newHostClaimSecret("meta-data", map[string][]byte{})},
+			HostClaim: NewHostClaimBuilder(hostClaimName, namespaceName).Build(),
+		}),
+		Entry("Regular case - with image - remote", testCaseUpdate{
+			Machine:       newMachine("", nil),
+			M3Machine:     NewM3MBuilder(metal3machineName, namespaceName).InNamespace("").IdentityRef("kb").Image(defaultImage).UserData("user-data").MetaData("meta-data").WithClaimAnnotation(hostClaimName).Build(),
+			Secrets:       []client.Object{newHostClaimSecret("user-data", map[string][]byte{}), newHostClaimSecret("meta-data", map[string][]byte{})},
+			HostClaim:     NewHostClaimBuilder(hostClaimName, remoteNs).Build(),
+			Remote:        true,
+			RemoteSecrets: 2,
+		}),
+		Entry("Regular case - with image - remote - no image", testCaseUpdate{
+			Machine:       newMachine("", nil),
+			M3Machine:     NewM3MBuilder(metal3machineName, namespaceName).InNamespace("").IdentityRef("kb").Image(defaultImage).UserData("user-data").MetaData("meta-data").WithClaimAnnotation(hostClaimName).Build(),
+			HostClaim:     NewHostClaimBuilder(hostClaimName, remoteNs).Build(),
+			Remote:        true,
+			ExpectRequeue: true,
+		}),
+	)
 })
 
 // MockRemote implements the RemoteClientCache interface.
@@ -548,6 +662,11 @@ func (mb *M3MBuilder) InNamespace(ns string) *M3MBuilder {
 	return mb
 }
 
+func (mb *M3MBuilder) IdentityRef(secretName string) *M3MBuilder {
+	mb.metal3machine.Spec.IdentityRef = infrav1.IdentityRef{Name: secretName}
+	return mb
+}
+
 func (mb *M3MBuilder) WithClaimAnnotation(name string) *M3MBuilder {
 	if mb.metal3machine.Annotations == nil {
 		mb.metal3machine.Annotations = map[string]string{}
@@ -583,6 +702,13 @@ func (mb *M3MBuilder) UserData(name string) *M3MBuilder {
 	return mb
 }
 
+func (mb *M3MBuilder) MetaData(name string) *M3MBuilder {
+	mb.metal3machine.Spec.MetaData = &corev1.SecretReference{
+		Name: name,
+	}
+	return mb
+}
+
 func (mb *M3MBuilder) RenderedData(name string) *M3MBuilder {
 	mb.metal3machine.Status.RenderedData = &infrav1.Metal3ObjectRef{
 		Name:      name,
@@ -597,4 +723,19 @@ func (mb *M3MBuilder) DataTemplate(name string) *M3MBuilder {
 		Namespace: mb.metal3machine.Namespace,
 	}
 	return mb
+}
+
+func newHostClaimSecret(name string, content map[string][]byte) *corev1.Secret {
+	return &corev1.Secret{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Secret",
+			APIVersion: "v1",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      name,
+			Namespace: namespaceName,
+		},
+		Data: content,
+		Type: "Opaque",
+	}
 }

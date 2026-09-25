@@ -19,14 +19,17 @@ package baremetal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 
 	"github.com/go-logr/logr"
 	bmov1alpha1 "github.com/metal3-io/baremetal-operator/apis/metal3.io/v1alpha1"
 	infrav1 "github.com/metal3-io/cluster-api-provider-metal3/api/v1beta2"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util/patch"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -150,8 +153,51 @@ func (m *MachineHostClaimManager) Associate(ctx context.Context) (string, error)
 	return infrav1.AssociateHostClaimSuccessReason, nil
 }
 
-// getHostClaim gets the associated hostclaim by looking for an annotation on the machine
-// that contains a reference to the host. Returns nil if not found. Assumes the
+// Update updates a machine and is invoked by the Machine Controller.
+func (m *MachineHostClaimManager) Update(ctx context.Context) error {
+	m.Log.Info("Updating machine")
+
+	hostClaim, helper, err := m.getHostClaim(ctx)
+	if err != nil {
+		return err
+	}
+	if hostClaim == nil {
+		err = fmt.Errorf("HostClaim not found for machine %s", m.Machine.Name)
+		return WithTransientError(err, requeueAfter)
+	}
+
+	if err = m.WaitForM3Metadata(ctx); err != nil {
+		return err
+	}
+
+	err = m.setHostClaimConsumerRef(ctx, hostClaim)
+	if err != nil {
+		return err
+	}
+
+	// ensures that the BMH specs are correctly set.
+	err = m.setHostClaimSpec(ctx, hostClaim)
+	if err != nil {
+		return err
+	}
+
+	err = helper.Patch(ctx, hostClaim)
+	if err != nil {
+		return err
+	}
+
+	m.ensureAnnotation(ctx, hostClaim)
+
+	if err := m.updateMachineStatus(ctx, hostClaim); err != nil {
+		return err
+	}
+
+	m.Log.Info("Finished updating machine")
+	return nil
+}
+
+// getHostClaim gets the associated HostClaim by looking for an annotation on the machine
+// that contains a reference to the hostclaim. Returns nil if not found. Assumes the
 // hostclaim is in the same namespace as the machine if local.
 func (m *MachineHostClaimManager) getHostClaim(ctx context.Context) (*bmov1alpha1.HostClaim, *patch.Helper, error) {
 	hostClient := m.client
@@ -194,6 +240,122 @@ func getHostClaim(
 		return nil, err
 	}
 	return &hostclaim, nil
+}
+
+// Synchronize the secrets from the m3machine namespace to the hostclaim
+// namespace. Original secrets are defined by a reference.
+// Names are derived from the hostClaim name with a suffix (purpose).
+// the function gives back a reference to the new secret or an error.
+func (m *MachineHostClaimManager) syncSecretData(
+	ctx context.Context, source *corev1.SecretReference,
+	hostclaim *bmov1alpha1.HostClaim, secretRole string,
+) (*corev1.SecretReference, error) {
+	log := m.Log.WithValues(LogFieldSecretRole, secretRole)
+	log.Info("Setting secret")
+	if source == nil {
+		return nil, nil //nolint:nilnil
+	}
+	target := corev1.SecretReference{}
+	// local HostClaim, we just push the reference and fix the namespace if needed.
+	if m.remoteClient == nil {
+		target.Name = source.Name
+	} else {
+		namespace := m.remoteClient.Namespace
+		target.Name = hostclaim.Name + "-" + secretRole
+		localSecretKey := client.ObjectKey{
+			Name:      source.Name,
+			Namespace: m.Metal3Machine.Namespace,
+		}
+		localSecret := corev1.Secret{}
+		err := m.client.Get(ctx, localSecretKey, &localSecret)
+		if err != nil {
+			log.Error(err, "missing data secret - requeueing", LogFieldSecretName, source.Name, LogFieldNamespace, m.Metal3Machine.Namespace)
+			if apierrors.IsNotFound(err) {
+				return nil, WithTransientError(err, requeueAfter)
+			}
+			log.Error(err, "Transient error while fetching local data secret", LogFieldSecretName, source.Name, LogFieldNamespace, m.Metal3Machine.Namespace)
+			return nil, err
+		}
+		remoteSecret := corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      target.Name,
+				Namespace: namespace,
+			},
+		}
+		_, err = controllerutil.CreateOrUpdate(
+			ctx, m.remoteClient, &remoteSecret,
+			func() error {
+				remoteSecret.Data = localSecret.Data
+				remoteSecret.Type = localSecret.Type
+				return controllerutil.SetOwnerReference(hostclaim, &remoteSecret, m.remoteClient.Scheme())
+			})
+		if err != nil {
+			log.Error(err, "cannot update remote secret", LogFieldSecretName, target.Name, LogFieldHostClaimNamespace, namespace)
+			return nil, err
+		}
+	}
+	return &target, nil
+}
+
+// setHostClaimSpec will ensure the HostClaim Spec is set according to the machine's
+// details. It will then update the HostClaim via the kube API. If UserData does not
+// include a Namespace, it will default to the Metal3Machine's namespace.
+func (m *MachineHostClaimManager) setHostClaimSpec(ctx context.Context, hostClaim *bmov1alpha1.HostClaim) error {
+	// We only want to update the image setting if the host does not
+	// already have an image.
+	//
+	// A host with an existing image or customDeploy is already provisioned
+	// and upgrades are not supported at this time. To re-provision a
+	// host, we must fully deprovision it and then provision it again.
+	// Not provisioning while we do not have the UserData.
+	if hostClaim.Spec.Image == nil && hostClaim.Spec.CustomDeploy == nil && m.Metal3Machine.Status.UserData != nil {
+		// Ensure either Image or CustomDeploy is configured
+		imageConfigured := m.Metal3Machine.Spec.Image.URL != ""
+		customDeployConfigured := m.Metal3Machine.Spec.CustomDeploy.Method != ""
+
+		if !imageConfigured && !customDeployConfigured {
+			logger := m.Log.WithValues("Metal3Machine", m.Metal3Machine.Name)
+			logger.Error(nil, "Neither Image nor CustomDeploy is configured on Metal3Machine, unable to provision")
+			return fmt.Errorf("Metal3Machine %s has neither Image.URL nor CustomDeploy.Method configured", m.Metal3Machine.Name)
+		}
+
+		if imageConfigured {
+			hostClaim.Spec.Image = &bmov1alpha1.Image{
+				URL:          m.Metal3Machine.Spec.Image.URL,
+				Checksum:     ptr.Deref(m.Metal3Machine.Spec.Image.Checksum, ""),
+				ChecksumType: bmov1alpha1.ChecksumType(m.Metal3Machine.Spec.Image.ChecksumType),
+				DiskFormat:   &m.Metal3Machine.Spec.Image.DiskFormat,
+			}
+		}
+		if customDeployConfigured {
+			hostClaim.Spec.CustomDeploy = &bmov1alpha1.CustomDeploy{
+				Method: m.Metal3Machine.Spec.CustomDeploy.Method,
+			}
+		}
+
+		ref, err := m.syncSecretData(ctx, m.Metal3Machine.Status.UserData, hostClaim, "userdata")
+		if err != nil {
+			return err
+		}
+		hostClaim.Spec.UserData = ref
+
+		ref, err = m.syncSecretData(ctx, m.Metal3Machine.Status.MetaData, hostClaim, "metadata")
+		if err != nil {
+			return err
+		}
+		hostClaim.Spec.MetaData = ref
+
+		ref, err = m.syncSecretData(ctx, m.Metal3Machine.Status.NetworkData, hostClaim, "networkdata")
+		if err != nil {
+			return err
+		}
+		hostClaim.Spec.NetworkData = ref
+
+		hostClaim.Spec.AutomatedCleaningMode = bmov1alpha1.AutomatedCleaningMode(m.Metal3Machine.Spec.AutomatedCleaningMode)
+
+		hostClaim.Spec.PoweredOn = true
+	}
+	return nil
 }
 
 // ensureAnnotation makes sure the machine has an annotation that references the
@@ -266,7 +428,7 @@ func (m *MachineHostClaimManager) provideHostClaim(ctx context.Context) (*bmov1a
 			hostclaim.Spec.HostSelector = selector
 			hostclaim.Spec.PoweredOn = false
 			hostclaim.Spec.FailureDomain = m.Metal3Machine.Spec.FailureDomain
-			return m.setHostConsumerRef(ctx, hostclaim)
+			return m.setHostClaimConsumerRef(ctx, hostclaim)
 		})
 	if err != nil {
 		return nil, nil, err
@@ -275,11 +437,89 @@ func (m *MachineHostClaimManager) provideHostClaim(ctx context.Context) (*bmov1a
 	return hostclaim, helper, err
 }
 
-// setHostConsumerRef will ensure the host's Spec is set to link to the
+// hardwareDataAddresses returns a slice of corev1.NodeAddress objects from the HardwareData.
+func hardwareDataAddresses(hwdata *bmov1alpha1.HardwareData) []clusterv1.MachineAddress {
+	addrs := []clusterv1.MachineAddress{}
+
+	// If the hardwareData is nil or we have no hw details, return an empty address array.
+	if hwdata == nil || hwdata.Spec.HardwareDetails == nil {
+		return addrs
+	}
+
+	for _, nic := range hwdata.Spec.HardwareDetails.NIC {
+		if nic.IP == "" {
+			continue
+		}
+		address := clusterv1.MachineAddress{
+			Type:    clusterv1.MachineInternalIP,
+			Address: nic.IP,
+		}
+		addrs = append(addrs, address)
+	}
+
+	if hwdata.Spec.HardwareDetails.Hostname != "" {
+		addrs = append(addrs, clusterv1.MachineAddress{
+			Type:    clusterv1.MachineHostName,
+			Address: hwdata.Spec.HardwareDetails.Hostname,
+		})
+		addrs = append(addrs, clusterv1.MachineAddress{
+			Type:    clusterv1.MachineInternalDNS,
+			Address: hwdata.Spec.HardwareDetails.Hostname,
+		})
+	}
+
+	return addrs
+}
+
+// updateMachineStatus updates a Metal3Machine object's status.
+func (m *MachineHostClaimManager) updateMachineStatus(ctx context.Context, hostclaim *bmov1alpha1.HostClaim) error {
+	oldM3mStatus := m.Metal3Machine.Status.DeepCopy()
+
+	cl := m.client
+	if m.remoteClient != nil {
+		cl = m.remoteClient
+	}
+
+	hardwareDataRef := hostclaim.Status.HardwareData
+	if hardwareDataRef == nil {
+		// Will requeue when hostClaim status modified.
+		m.Log.Info("No hardware data linked yet", LogFieldHostClaim, hostclaim.Name, LogFieldHostClaimNamespace, hostclaim.Namespace)
+		return nil
+	}
+
+	hardwareData := &bmov1alpha1.HardwareData{}
+	key := client.ObjectKey{Namespace: hardwareDataRef.Namespace, Name: hardwareDataRef.Name}
+	if err := cl.Get(ctx, key, hardwareData); err != nil {
+		m.Log.Error(err, "cannot access hardwareData",
+			LogFieldHardwareData, hardwareDataRef.Name, LogFieldHardwareDataNamespace, hardwareDataRef.Namespace)
+		return err
+	}
+
+	overrides, err := m.addressOverridesFromMetaData(ctx)
+	if err != nil {
+		return err
+	}
+	if len(overrides) > 0 {
+		m.Metal3Machine.Status.Addresses = overrides
+	} else {
+		m.Metal3Machine.Status.Addresses = hardwareDataAddresses(hardwareData)
+	}
+
+	if equality.Semantic.DeepEqual(&m.Metal3Machine.Status, oldM3mStatus) {
+		// Status did not change
+		return nil
+	}
+
+	now := metav1.Now()
+	m.Metal3Machine.Status.LastUpdated = &now
+	return nil
+}
+
+// setHostClaimConsumerRef will ensure the host's Spec is set to link to the
 // Metal3Machine that created it. Name and namespace can only be interpreted on the cluster
 // hosting the Metal3Machine, so we use a special kind for remote claims to prevent a local
 // controller on the remote cluster from resolving those consumers.
-func (m *MachineHostClaimManager) setHostConsumerRef(_ context.Context, hostclaim *bmov1alpha1.HostClaim) error {
+func (m *MachineHostClaimManager) setHostClaimConsumerRef(_ context.Context, hostclaim *bmov1alpha1.HostClaim) error {
 	kind := metal3MachineKind
 	cl := m.client
 	if m.remoteClient != nil {
