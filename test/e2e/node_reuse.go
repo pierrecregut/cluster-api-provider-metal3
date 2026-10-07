@@ -494,7 +494,7 @@ func getProvisionedBmhNames(ctx context.Context, namespace string, clusterClient
 	return nameList
 }
 
-func updateNodeReuse(ctx context.Context, namespace string, nodeReuse bool, m3MachineTemplateName string, clusterClient client.Client) {
+func updateNodeReuse(ctx context.Context, namespace string, nodeReuse bool, m3MachineTemplateName string, clusterClient client.Client) { //nolint:unparam
 	m3machineTemplate := infrav1.Metal3MachineTemplate{}
 	Expect(clusterClient.Get(ctx, client.ObjectKey{Namespace: namespace, Name: m3MachineTemplateName}, &m3machineTemplate)).To(Succeed())
 	helper, err := patch.NewHelper(&m3machineTemplate, clusterClient)
