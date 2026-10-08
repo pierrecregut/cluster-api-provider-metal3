@@ -1,0 +1,79 @@
+resources:
+- ../bases/ippool
+- ../bases/centos-kubeadm-config
+patches:
+- target:
+    group: infrastructure.cluster.x-k8s.io
+    kind: Metal3MachineTemplate
+  patch: |-
+    - op: add
+      path: /spec/template/spec/hostSelector
+      value:
+        hostClaim: true
+- target:
+    group: bootstrap.cluster.x-k8s.io
+    kind: KubeadmConfigTemplate
+  patch: |-
+    apiVersion:  bootstrap.cluster.x-k8s.io/v1beta2
+    kind: KubeadmConfigTemplate
+    metadata:
+      name: name
+    spec:
+      template:
+        spec:
+          joinConfiguration:
+            nodeRegistration:
+              kubeletExtraArgs:
+              - name: cgroup-driver
+                value: systemd
+              - name: container-runtime-endpoint
+                value: unix:///var/run/crio/crio.sock
+              - name: feature-gates
+                value: AllAlpha=false
+              - name: node-labels
+                value: 'metal3.io/uuid={{ ds.meta_data.uuid }}'
+              - name: provider-id
+                value: '${PROVIDER_ID_FORMAT}'
+              - name: runtime-request-timeout
+                value: '5m'
+- target:
+    group: controlplane.cluster.x-k8s.io
+    kind: KubeadmControlPlane
+  patch: |-
+    apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+    kind: KubeadmControlPlane
+    metadata:
+      name: name
+    spec:
+      kubeadmConfigSpec:
+        initConfiguration:
+          nodeRegistration:
+            kubeletExtraArgs:
+            - name: cgroup-driver
+              value: systemd
+            - name: container-runtime-endpoint
+              value: unix:///var/run/crio/crio.sock
+            - name: feature-gates
+              value: AllAlpha=false
+            - name: node-labels
+              value: 'metal3.io/uuid={{ ds.meta_data.uuid }}'
+            - name: provider-id
+              value: '${PROVIDER_ID_FORMAT}'
+            - name: runtime-request-timeout
+              value: '5m'
+        joinConfiguration:
+          controlPlane: {}
+          nodeRegistration:
+            kubeletExtraArgs:
+            - name: cgroup-driver
+              value: systemd
+            - name: container-runtime-endpoint
+              value: unix:///var/run/crio/crio.sock
+            - name: feature-gates
+              value: AllAlpha=false
+            - name: node-labels
+              value: 'metal3.io/uuid={{ ds.meta_data.uuid }}'
+            - name: provider-id
+              value: '${PROVIDER_ID_FORMAT}'
+            - name: runtime-request-timeout
+              value: '5m'

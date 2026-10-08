@@ -53,7 +53,7 @@ case "${GINKGO_FOCUS:-}" in
   ;;
 
   # Integration test environment vars and config
-  basic|integration)
+  basic|integration|hostclaim-basic)
     export NUM_NODES=${NUM_NODES:-"2"}
     export CONTROL_PLANE_MACHINE_COUNT=${CONTROL_PLANE_MACHINE_COUNT:-"1"}
     export WORKER_MACHINE_COUNT=${WORKER_MACHINE_COUNT:-"1"}

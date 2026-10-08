@@ -437,6 +437,39 @@ func ListBareMetalHosts(ctx context.Context, c client.Client, opts ...client.Lis
 	logTable("Listing BareMetalHosts", rows)
 }
 
+// ListHostClaims logs the names, Ready-condition status, ConsumerRef (Kind/Name)
+// and backing BareMetalHost of all HostClaims in the namespace.
+// Mirrors ListBareMetalHosts for the HostClaim path.
+func ListHostClaims(ctx context.Context, c client.Client, opts ...client.ListOption) {
+	hcs := bmov1alpha1.HostClaimList{}
+	Expect(c.List(ctx, &hcs, opts...)).To(Succeed())
+
+	rows := make([][]string, len(hcs.Items)+1)
+	rows[0] = []string{"Name:", "Ready:", "Consumer Kind:", "Consumer Name:", "BMH:"}
+
+	for i, hc := range hcs.Items {
+		consumerKind := ""
+		consumerName := ""
+		bmh := ""
+		ready := "???"
+		if hc.Spec.ConsumerRef != nil {
+			consumerKind = hc.Spec.ConsumerRef.Kind
+			consumerName = hc.Spec.ConsumerRef.Name
+		}
+		if hc.Status.BareMetalHost != nil {
+			bmh = hc.Status.BareMetalHost.Namespace + "/" + hc.Status.BareMetalHost.Name
+		}
+		for _, cond := range hc.Status.Conditions {
+			if cond.Type == string(clusterv1.ReadyCondition) {
+				ready = string(cond.Status)
+				break
+			}
+		}
+		rows[i+1] = []string{hc.GetName(), ready, consumerKind, consumerName, bmh}
+	}
+	logTable("Listing HostClaims", rows)
+}
+
 // ListMetal3Machines logs the names, ready status and provider ID of all Metal3Machines in the namespace.
 // Similar to kubectl get metal3machines.
 func ListMetal3Machines(ctx context.Context, c client.Client, opts ...client.ListOption) {

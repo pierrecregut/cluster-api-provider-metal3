@@ -283,6 +283,8 @@ providers:
       targetName: "cluster-template-centos-md-taints-v1beta1.yaml"
     - sourcePath: "../_out/main/cluster-template-centos-ip-reuse-v1beta1.yaml"
       targetName: "cluster-template-centos-ip-reuse-v1beta1.yaml"
+    - sourcePath: "../_out/main/cluster-template-centos-hostclaims.yaml"
+      targetName: "cluster-template-centos-hostclaims.yaml"
 
 variables:
   CNI: "/tmp/cni.yaml"
@@ -372,6 +374,7 @@ variables:
   BMO_RELEASE_0.14: "data/bmo-deployment/overlays/release-0.14"
   BMO_RELEASE_PR_TEST: "data/bmo-deployment/overlays/pr-test"
   BMO_RELEASE_MAIN: "data/bmo-deployment/overlays/release-main"
+  BMO_RELEASE_HOSTCLAIM: "data/bmo-deployment/overlays/release-hostclaims"
   FKAS_RELEASE_LATEST: "data/fkas"
   FAKE_IPA_IMAGE: "${FAKE_IPA_IMAGE:-registry.nordix.org/quay-io-proxy/metal3-io/fake-ipa}"
   REPO_NAME: "${REPO_NAME:-cluster-api-provider-metal3}"
